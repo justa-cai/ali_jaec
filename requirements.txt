@@ -1,0 +1,8 @@
+# Training and evaluation are pure PyTorch; onnx/onnxruntime are only needed
+# for export_onnx.py and infer.py.
+torch>=2.4
+numpy>=1.24
+soundfile>=0.12
+onnx>=1.16
+onnxscript>=0.2        # required by torch.onnx dynamo export
+onnxruntime>=1.17      # ONNX DFT (used for the FFTs) needs >= 1.17
