@@ -182,17 +182,12 @@
 
 <section class="wrap" id="how">
   <h2><span class="num">05</span> 怎么做的</h2>
-  <pre class="diagram">ref  x(n) ─┬─> [ 延迟估计 ]  GCC-PHAT 互相关 → soft-argmax
-           │        │  tau
-           │        v
-           │   对齐参考  x_tau(n)
-           │        │
-mic  d(n) ─┼────────┴─> [ 回声估计 ]  逐频点因果 FIR
-           │                    │  y_hat(n)
-           │                    v
-           │          最小二乘增益  alpha = &lt;Xm, y_hat&gt; / &lt;y_hat, y_hat&gt;
-           │                    │
-           └─────────> e(n) = mask( d(n) - alpha * y_hat(n) )</pre>
+  <div class="arch"><img src="architecture-dark.svg" width="1040" height="620"
+       alt="信号流。远端参考 x(n) 沿顶部依次经过四级：GCC-PHAT 延迟估计（输出标量延迟 tau）、
+            按 tau 对齐、逐频点因果 FIR 回声估计 y_hat、以及 50 ms 平均的最小二乘增益 alpha。
+            得到的 alpha·y_hat 沿右侧竖轨送入减法节点，与近端麦克风 d(n) 相减。残差 e0(n)
+            分出一路进入掩码分支——16 个频带特征、GRU（64 → 96）、257 频点谱掩码——
+            再回到乘法节点，输出 e(n) = mask · (d(n) − alpha·y_hat(n))。"></div>
   <ul class="steps">
     <li><b>延迟估计。</b>GCC-PHAT 互相关经可微 soft-argmax 得到一个标量延迟，
       据此对齐参考信号。下游就只需要处理趋近于零的残余延迟。</li>

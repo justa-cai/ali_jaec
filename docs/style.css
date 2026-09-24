@@ -322,17 +322,10 @@ button, .ghost {
 .scores .best { color: var(--accent); font-weight: 600; }
 
 /* ----------------------------------------------------------------- how */
-.diagram {
-  margin: 0 0 24px;
-  padding: 20px;
-  overflow-x: auto;
-  background: #0b0f14;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  font: 12.5px/1.75 var(--mono);
-  color: var(--fg-dim);
-  white-space: pre;
-}
+/* The SVG draws its own panel, border and rounded corners, so the wrapper
+   stays bare -- a second box here would just double the frame. */
+.arch { margin: 0 0 24px; }
+.arch img { display: block; width: 100%; height: auto; }
 
 .steps { margin: 0; padding-left: 20px; color: var(--fg-dim); font-size: 15px; }
 .steps li { margin-bottom: 11px; }
@@ -388,5 +381,11 @@ footer a:hover { text-decoration: underline; }
   section { padding: 40px 0 4px; }
   .player { padding: 14px 14px 12px; }
   .scores th, .scores td { padding: 10px 6px; font-size: 12.5px; }
-  .diagram { font-size: 11.5px; padding: 16px 14px; }
+  /* At 360 px the figure's 10.5 px labels shrink to ~3.6 px and turn to
+     mush. Scroll it instead of shrinking it. */
+  .arch {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .arch img { width: 640px; max-width: none; }
 }
