@@ -19,6 +19,16 @@
   --content-max: 880px;
   --pad-x: 24px;
   --wave-h: clamp(72px, 6.5vw, 104px);
+
+  /* Running text is deliberately NOT capped to a narrower measure: notes,
+     figure captions, the step list and the cards and tables all end on the
+     same column edge, so the page has one width instead of a ribbon of prose
+     floating inside a wider column. Blocks disagreeing about that edge is
+     what made section 02 read as if the layout had come apart -- a 68ch note
+     stopped at 567 px while the hint right under it ran the full 952. ch was
+     the wrong unit for the job anyway: it is the width of "0" in whatever
+     font the element itself uses, so one number rendered 567 px in a 15 px
+     note and 529 px in the 14 px caption below it. */
 }
 
 * { box-sizing: border-box; }
@@ -92,7 +102,6 @@ h1 {
 
 .lede {
   margin: 0;
-  max-width: 62ch;
   font-size: 17px;
   color: var(--fg-dim);
 }
@@ -135,7 +144,6 @@ h2 .num {
 
 .note {
   margin: 0 0 26px;
-  max-width: 68ch;
   color: var(--fg-dim);
   font-size: 15px;
 }
@@ -284,7 +292,6 @@ audio { width: 100%; height: 34px; display: block; }
 
 .tiles figcaption {
   margin-top: 16px;
-  max-width: 68ch;
   color: var(--fg-faint);
   font-size: 14px;
 }
@@ -416,7 +423,12 @@ button, .ghost {
 .arch { margin: 0 0 24px; }
 .arch img { display: block; width: 100%; height: auto; }
 
-.steps { margin: 0; padding-left: 20px; color: var(--fg-dim); font-size: 15px; }
+.steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--fg-dim);
+  font-size: 15px;
+}
 .steps li { margin-bottom: 11px; }
 .steps b { color: var(--fg); font-weight: 600; }
 .steps i { color: var(--accent); font-style: normal; }
