@@ -11,6 +11,13 @@
   --out: #56d364;
   --accent: #56d364;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* Layout scales with the viewport so the page does not become a thin
+     ribbon on a 27" display, nor overflow on a phone. Every breakpoint
+     below only moves these two numbers. */
+  --content-max: 880px;
+  --pad-x: 24px;
+  --wave-h: clamp(72px, 6.5vw, 104px);
 }
 
 * { box-sizing: border-box; }
@@ -26,7 +33,36 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-.wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+.wrap {
+  width: 100%;
+  max-width: var(--content-max);
+  margin-inline: auto;
+  padding-inline: var(--pad-x);
+}
+
+/* ---------------------------------------------------- repo link (top right) */
+.repo {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 15px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(22, 27, 34, .84);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--fg-dim);
+  font-size: 13.5px;
+  line-height: 1;
+  text-decoration: none;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.repo:hover { color: var(--fg); border-color: var(--fg-faint); background: var(--bg-soft); }
+.repo svg { flex: none; display: block; }
 
 /* ---------------------------------------------------------------- hero */
 .hero {
@@ -47,7 +83,7 @@ body {
 
 h1 {
   margin: 0 0 18px;
-  font-size: clamp(38px, 7vw, 60px);
+  font-size: clamp(40px, 6.4vw, 72px);
   line-height: 1.02;
   letter-spacing: -.03em;
   font-weight: 700;
@@ -155,7 +191,7 @@ h2 .num {
 .player canvas {
   display: block;
   width: 100%;
-  height: 72px;
+  height: var(--wave-h);
   margin-bottom: 10px;
   border-radius: 6px;
   background: #0b0f14;
@@ -312,7 +348,7 @@ button, .ghost {
 
 /* -------------------------------------------------------------- footer */
 footer {
-  padding: 40px 24px 72px;
+  padding-block: 40px 72px;
   border-top: 1px solid var(--line);
   color: var(--fg-faint);
   font-size: 14px;
@@ -322,8 +358,35 @@ footer a { color: var(--mic); text-decoration: none; }
 footer a:hover { text-decoration: underline; }
 .fine { font-size: 12.5px; color: var(--fg-faint); }
 
+/* --------------------------------------------------- display-size adaptation
+   The column widens in steps as the viewport grows, and the type along with
+   it, so the page keeps a readable measure on a phone and stops looking like
+   a ribbon on a large desktop display. */
+@media (min-width: 1200px) {
+  :root { --content-max: 1000px; }
+}
+
+@media (min-width: 1500px) {
+  :root { --content-max: 1120px; --pad-x: 32px; }
+  body { font-size: 16.5px; }
+  section { padding-top: 64px; }
+  .player { padding: 18px 20px 16px; }
+}
+
+@media (min-width: 1900px) {
+  :root { --content-max: 1280px; }
+  body { font-size: 17px; }
+  h2 { font-size: 25px; }
+  .lede { font-size: 18px; }
+  h2 .num { font-size: 14px; }
+}
+
 @media (max-width: 560px) {
-  .hero { padding: 52px 0 36px; }
+  .repo { top: 12px; right: 12px; padding: 8px 12px; font-size: 12.5px; }
+  .repo svg { width: 15px; height: 15px; }
+  .hero { padding: 64px 0 36px; }
   section { padding: 40px 0 4px; }
-  .scores th, .scores td { padding: 10px 8px; font-size: 13px; }
+  .player { padding: 14px 14px 12px; }
+  .scores th, .scores td { padding: 10px 6px; font-size: 12.5px; }
+  .diagram { font-size: 11.5px; padding: 16px 14px; }
 }

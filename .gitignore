@@ -3,3 +3,5 @@ __pycache__/
 data/
 build/
 cpp/build/
+tmp/
+.playwright-cli/

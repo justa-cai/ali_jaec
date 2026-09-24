@@ -206,7 +206,11 @@ function maxDiff(a, b) {
 // ---------------------------------------------------------------- waveform
 function drawWave(canvas, samples, color) {
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = 72;
+  // Height comes from CSS (--wave-h, a clamp() on the viewport) so the
+  // waveform grows with the display instead of staying 72 px forever. Read the
+  // laid-out height rather than hard-coding it; assigning width/height only
+  // resizes the backing bitmap and does not feed back into the CSS box.
+  const w = canvas.clientWidth, h = canvas.clientHeight || 72;
   canvas.width = w * dpr; canvas.height = h * dpr;
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
