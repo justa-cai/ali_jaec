@@ -49,20 +49,19 @@ rooms. These two measurements use real recordings.
 
 ## How it works
 
-```
-ref  x(n) ─┬─> [ delay estimator ]  GCC-PHAT cross-correlation
-           │        │  tau
-           │        v
-           │   aligned reference  x_tau(n)
-           │        │
-mic  d(n) ─┼────────┴─> [ echo estimate ]  per-bin causal FIR
-           │                    │  y_hat(n)
-           │                    v
-           │        least-squares gain  alpha = <Xm, y_hat> / <y_hat, y_hat>
-           │                    │
-           │                    v
-           └─────────> e(n) = mask( d(n) - alpha * y_hat(n) )
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/architecture-light.svg">
+  <img alt="Signal flow. The far-end reference x(n) runs along the top through four
+    stages: a GCC-PHAT delay estimator that yields a single delay tau, an alignment
+    by tau, a per-bin causal FIR echo estimate y-hat, and a least-squares gain
+    alpha averaged over 50 ms. The resulting alpha*y-hat is carried down the
+    right-hand spine into a subtractor fed by the near-end microphone d(n). The
+    residual e0(n) taps off into a second branch -- 16 band features, a GRU
+    (64 to 96), and a 257-bin spectral mask -- which returns to a multiplier,
+    giving the output e(n) = mask * (d(n) - alpha*y-hat(n))."
+    src="docs/architecture-light.svg">
+</picture>
 
 1. **Delay estimation.** A GCC-PHAT cross-correlation between microphone and
    reference is reduced to a single scalar delay by a soft-argmax over the lag
@@ -119,6 +118,8 @@ weights/aec_lp.onnx  the same graph, exported
 weights/aec_lp.bin   the same weights as a flat array, for the C engine
 cpp/                 C++ / ONNX Runtime example (see cpp/README.md)
 c/                   dependency-free C99 engine (see c/README.md)
+docs/                browser demo on GitHub Pages, plus the architecture
+                     figure (gen_architecture_svg.py regenerates it)
 ```
 
 ## Inference
