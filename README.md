@@ -146,7 +146,7 @@ path is baked into the code:
 
 ```bash
 python prepare_dataset.py --dataset /path/to/AEC-Challenge --out data   # ~19 GB
-python train.py --data data --out weights/aec_lp.pt                     # ~1.6 h on one GPU
+python train.py --data data --out weights/aec_lp.pt                     # ~1 h on one GPU
 python evaluate.py --ckpt weights/aec_lp.pt --limit 500
 python export_onnx.py --ckpt weights/aec_lp.pt --out weights/aec_lp.onnx
 ```

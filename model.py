@@ -17,10 +17,11 @@ and the far-end reference ``x``:
 
     e(n) = mask( d(n) - alpha * y_hat(n) )
 
-Everything runs on a 16 kHz mono signal with a 512/160 sqrt-Hann STFT
-(``stft.py``), which is where the fixed 352-sample algorithmic delay comes
-from. There is no nonlinear processing stage: only a linear function of the
-reference is ever removed.
+Everything runs on a 16 kHz mono signal through a 512/160 sqrt-Hann STFT
+(``stft.py``). The output is time-aligned with the microphone: the analysis is
+causal but the whole recording is available, so synthesis reconstructs it in
+place rather than at a 352-sample offset. There is no nonlinear processing
+stage -- only a linear function of the reference is ever removed.
 
 All operations are chosen so the module exports to ONNX as-is; see
 ``export_onnx.py``. Keep it that way if you edit this file.
@@ -29,8 +30,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from stft import (FREQ, NFFT, HOP, SR, next_pow2, rfftfreq, sqrt_hann, stft,
-                  istft, to_full)
+from stft import (FREQ, next_pow2, rfftfreq, sqrt_hann, stft, istft, to_full)
 
 
 def time_average(x, k):

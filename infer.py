@@ -67,16 +67,13 @@ class TorchRunner:
         self.torch = torch
         self.device = device
 
-    def __call__(self, mic, ref):
+    def infer(self, mic, ref):
         t = self.torch
         with t.no_grad():
             y, _, tau = self.model(t.from_numpy(mic)[None].to(self.device),
                                    t.from_numpy(ref)[None].to(self.device),
                                    length=len(mic))
         return y[0].cpu().numpy(), float(tau.item())
-
-    def close(self):
-        pass
 
 
 class OnnxRunner:
@@ -90,9 +87,6 @@ class OnnxRunner:
     def infer(self, mic, ref):
         o = self.sess.run(None, {'mic': mic[None], 'ref': ref[None]})
         return o[0][0], float(o[1].reshape(-1)[0])
-
-    def close(self):
-        pass
 
 
 # ------------------------------------------------------------------ segment
@@ -192,18 +186,14 @@ def main():
 
     if args.ckpt:
         runner = TorchRunner(args.ckpt, args.device)
-        runner.infer = runner.__call__
         kind = 'torch %s' % args.ckpt
     else:
         runner = OnnxRunner(args.onnx or ckpt, args.segment)
         kind = 'onnx %s' % (args.onnx or ckpt)
     print('model : %s' % kind)
 
-    try:
-        out = run_segmented(runner, mic.astype(np.float32), ref.astype(np.float32),
-                            args.segment, verbose=not args.quiet)
-    finally:
-        runner.close()
+    out = run_segmented(runner, mic.astype(np.float32), ref.astype(np.float32),
+                        args.segment, verbose=not args.quiet)
 
     data = np.stack([mic, ref, out]) if args.three_channel else out[None]
     write_wav(args.out, data, SR)
