@@ -9,6 +9,7 @@
   --mic: #6ea8fe;
   --ref: #d2a8ff;
   --out: #56d364;
+  --jaec: #e3b341;
   --accent: #56d364;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 
@@ -180,6 +181,7 @@ h2 .num {
 .tag-mic { color: var(--mic); }
 .tag-ref { color: var(--ref); }
 .tag-out { color: var(--out); }
+.tag-jaec { color: var(--jaec); }
 
 .sub {
   display: block;
@@ -200,6 +202,93 @@ h2 .num {
 audio { width: 100%; height: 34px; display: block; }
 
 .player.changed { border-color: var(--out); }
+
+/* ------------------------------------------------------- spectrogram tiles
+   Four time-frequency tiles on one time axis, drawn in the page from the same
+   WAVs the players use. They stay fluid at any width: the canvases are
+   resolution-independent and both the names and the frequency ticks are drawn
+   at a fixed CSS size, so unlike the architecture SVG there is nothing here
+   that turns to mush on a phone. */
+.tiles { margin: 18px 0 0; }
+
+.tile-grid { display: grid; grid-template-columns: 1fr; }
+
+/* The stack exists so the playhead can span exactly the four tiles without
+   measuring them: top:0/bottom:0 is the canvas area by construction. */
+.tile-stack { position: relative; display: grid; gap: 4px; }
+
+.tile { position: relative; }
+
+.tile canvas {
+  display: block;
+  width: 100%;
+  height: clamp(64px, 4.6vw, 84px);
+  background: #0b0f14;
+  border-radius: 6px;
+}
+
+.tile-name {
+  position: absolute;
+  top: 4px;
+  left: 5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(6, 10, 15, .74);
+  color: var(--fg-dim);
+  font: 11px/1.45 var(--mono);
+  pointer-events: none;
+}
+
+.tile-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font: 11px/1 var(--mono);
+  color: var(--fg-faint);
+}
+
+/* The bar is a DOM gradient filled in from the same anchor colours the canvas
+   LUT is built from, so the legend cannot drift away from the picture. */
+.tile-scale {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 12px;
+  font: 11px/1 var(--mono);
+  color: var(--fg-faint);
+}
+.scale-bar {
+  flex: 0 0 108px;
+  height: 9px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.scale-note { margin-left: auto; }
+
+/* One playhead for all four rows: the players are time-aligned, so a single
+   line reads correctly against every tile. It is a DOM element moved with a
+   transform, so no canvas is redrawn while audio plays. */
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, .6);
+  opacity: 0;
+  transition: opacity .15s;
+  pointer-events: none;
+}
+
+.tiles figcaption {
+  margin-top: 16px;
+  max-width: 68ch;
+  color: var(--fg-faint);
+  font-size: 14px;
+}
+.tiles figcaption b { color: var(--fg-dim); font-weight: 600; }
 
 /* -------------------------------------------------------------- runner */
 .runner {
@@ -381,6 +470,10 @@ footer a:hover { text-decoration: underline; }
   section { padding: 40px 0 4px; }
   .player { padding: 14px 14px 12px; }
   .scores th, .scores td { padding: 10px 6px; font-size: 12.5px; }
+  .tile-name { font-size: 10px; padding: 1px 6px; }
+  .tile-axis, .tile-scale { font-size: 10px; }
+  .scale-bar { flex-basis: 72px; }
+  .tiles figcaption { font-size: 13px; }
   /* At 360 px the figure's 10.5 px labels shrink to ~3.6 px and turn to
      mush. Scroll it instead of shrinking it. */
   .arch {

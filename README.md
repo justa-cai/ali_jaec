@@ -14,7 +14,9 @@ plays), it estimates and removes the echo, and returns the near-end speech.
 * A browser demo runs the exported model client-side, with no backend:
   **https://justa-cai.github.io/ali_jaec/** — listen to the example pair, run
   the inference yourself, or try your own mic/reference files (nothing is
-  uploaded).
+  uploaded). The same page also plays the *released* front-end's output on that
+  clip for A/B comparison, and draws a four-row spectrogram of mic, reference,
+  both outputs, computed in the page from the same WAVs the players use.
 
 ## Results
 
@@ -226,4 +228,7 @@ The default configuration in `train.py` reproduces the checkpoint in
 The architecture and the measured behaviour of the released JAEC front-end
 (`iic/speech_jaec_aec_16k`) were used as the target for this reimplementation.
 Numbers quoted above as "released reference" are that model's, measured on the
-same data with the same metrics code in `metrics.py`.
+same data with the same metrics code in `metrics.py`. Both sides of the demo
+pair's comparison now ship in `docs/audio/` — `aec_out.wav` from this model and
+`aec_out_jaec.wav` from the released one, both aligned to `nearend_mic.wav` — so
+that row can be listened to rather than taken on trust.

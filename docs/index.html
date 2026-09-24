@@ -39,7 +39,8 @@
   <h2><span class="num">01</span> 示例音频</h2>
   <p class="note">
     来自官方示例的 10 秒录音对。麦克风里同时有近端人声和远端回声；
-    算法输出应当保留近端人声、去掉远端回声。
+    算法输出应当保留近端人声、去掉远端回声。下面四条依次是麦克风、远端参考、
+    本模型输出，以及<b>已发布参考实现</b>在同一段音频上的输出 —— 最后一条是拿来对比的基线。
   </p>
 
   <div class="players">
@@ -69,9 +70,55 @@
       <canvas height="72"></canvas>
       <audio controls preload="metadata" src="audio/aec_out.wav"></audio>
     </figure>
+
+    <figure class="player" data-kind="jaec">
+      <figcaption>
+        <span class="tag tag-jaec">JAEC 参考实现</span>
+        <span class="sub">已发布模型在同一段音频上的输出 · 已对齐到 mic</span>
+      </figcaption>
+      <canvas height="72"></canvas>
+      <audio controls preload="metadata" src="audio/aec_out_jaec.wav"></audio>
+    </figure>
   </div>
 
-  <p class="hint">先听 <b>近端 mic</b>，再听 <b>算法后</b>。</p>
+  <figure class="tiles" id="tiles">
+    <div class="tile-grid">
+      <div class="tile-stack">
+        <div class="tile" data-kind="mic" role="img" aria-label="近端 mic 的时频图">
+          <canvas aria-hidden="true"></canvas><span class="tile-name">近端 mic</span>
+        </div>
+        <div class="tile" data-kind="ref" role="img" aria-label="远端 ref 的时频图">
+          <canvas aria-hidden="true"></canvas><span class="tile-name">远端 ref</span>
+        </div>
+        <div class="tile" data-kind="out" role="img" aria-label="本模型输出的时频图">
+          <canvas aria-hidden="true"></canvas><span class="tile-name">本模型</span>
+        </div>
+        <div class="tile" data-kind="jaec" role="img" aria-label="JAEC 参考实现输出的时频图">
+          <canvas aria-hidden="true"></canvas><span class="tile-name">JAEC</span>
+        </div>
+        <div class="playhead" aria-hidden="true"></div>
+      </div>
+      <div class="tile-axis" aria-hidden="true">
+        <span>0 s</span><span>2 s</span><span>4 s</span><span>6 s</span
+        ><span>8 s</span><span>10 s</span>
+      </div>
+      <div class="tile-scale">
+        <span class="scale-end">−85 dB</span>
+        <span class="scale-bar" aria-hidden="true"></span>
+        <span class="scale-end">+25 dB</span>
+        <span class="scale-note">四条共用同一色标</span>
+      </div>
+    </div>
+    <figcaption>
+      同一段 10 秒音频的时频图：<b>512 点 FFT、10 ms 一帧</b>（和模型自己用的分析参数一致），
+      纵轴 0–8 kHz 线性，四条共用一条时间轴，与上面的播放器对齐。
+      颜色是能量，色标固定（−85 → +25 dB）且四条共用，所以深浅可以直接横向比。
+      <b>远端 ref</b> 里那些空白竖条是远端静音，而同一时刻 mic 里仍然有东西 —— 那就是近端人声。
+      两条输出的差别，就在「留住了多少近端、漏掉了多少回声」。播放任意一条，白线跟着走。
+    </figcaption>
+  </figure>
+
+  <p class="hint">先听 <b>近端 mic</b>，再听 <b>算法后</b>；想听基线就放 <b>JAEC 参考实现</b>。</p>
 </section>
 
 <section class="wrap" id="run">
