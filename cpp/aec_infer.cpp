@@ -14,6 +14,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -183,6 +185,14 @@ int main(int argc, char** argv) {
 
   std::string model_path = opt.model;
   if (model_path.empty()) model_path = "weights/aec_lp.onnx";
+  if (!std::ifstream(model_path).good()) {
+    std::fprintf(stderr,
+                 "cannot open model '%s'\n"
+                 "  the default path is relative to the working directory; "
+                 "pass --model, or run from the ali_jaec directory\n",
+                 model_path.c_str());
+    return 1;
+  }
 
   Engine engine(model_path, opt.segment);
   std::printf("model : %s (segment %d)\n", model_path.c_str(), engine.segment());
@@ -233,10 +243,12 @@ int main(int argc, char** argv) {
 
   std::vector<float> data;
   if (opt.three_channel) {
-    data.reserve(3 * n);
-    data.insert(data.end(), mic.begin(), mic.end());
-    data.insert(data.end(), ref.begin(), ref.end());
-    data.insert(data.end(), out.begin(), out.end());
+    data.resize(3 * n);                       // wav::write takes interleaved samples
+    for (size_t i = 0; i < n; ++i) {
+      data[3 * i + 0] = mic[i];
+      data[3 * i + 1] = ref[i];
+      data[3 * i + 2] = out[i];
+    }
   } else {
     data = out;
   }

@@ -38,7 +38,9 @@ falls back to a system install.
 `--three-channel` writes mic / ref / output so the result can be compared
 against the input in a single file. `--model` and `--segment` override the
 model path and the segment length (which must match the value used at export
-time).
+time). The default model path, `weights/aec_lp.onnx`, is relative to the
+working directory, so run the binary from the `ali_jaec` directory or pass
+`--model` explicitly.
 
 The runtime library has to be findable at run time:
 
