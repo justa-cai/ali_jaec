@@ -1,0 +1,4 @@
+aec_infer
+test_fft
+libaec.a
+*.o

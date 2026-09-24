@@ -7,7 +7,8 @@ plays), it estimates and removes the echo, and returns the near-end speech.
 * 0.090 M parameters (351 kB as fp32).
 * 10 ms frames (`NFFT = 512`, `HOP = 160`, sqrt-Hann window).
 * Runs offline or in fixed 3 s segments; the same graph is exported to ONNX and
-  driven from Python or C++.
+  driven from Python, C++ -- or from a hand-written C99 engine that needs
+  neither ONNX Runtime nor a C++ compiler.
 * Training code, evaluation code and a reproducible acceptance suite are all
   included.
 * A browser demo runs the exported model client-side, with no backend:
@@ -115,7 +116,9 @@ export_onnx.py       ONNX export
 infer.py             Python command-line inference
 weights/aec_lp.pt    trained checkpoint
 weights/aec_lp.onnx  the same graph, exported
+weights/aec_lp.bin   the same weights as a flat array, for the C engine
 cpp/                 C++ / ONNX Runtime example (see cpp/README.md)
+c/                   dependency-free C99 engine (see c/README.md)
 ```
 
 ## Inference
@@ -140,6 +143,35 @@ linearly, which is convenient but not high quality.
 
 For the C++ version see [`cpp/README.md`](cpp/README.md).
 
+## A dependency-free C engine
+
+ONNX Runtime is a heavy dependency for a model this small: the exported graph
+is 6.75 MB on disk and **93 % of that is protobuf describing the graph**, not
+weights — 7559 nodes, of which 2402 `Constant`, 1592 `Cast`, 1569 `Reshape` and
+579 `Slice` exist only to spell out the FFTs and the shape juggling around them.
+Profiling it on one 3 s segment puts **58 % of the time in the `DFT` operators
+and 32 % in `Add`/`Slice`/`Pad`/`Mul`**, while the GRU — the only part that is
+really a neural network — costs 0.7 %.
+
+`c/` is the same computation written out by hand in C99, linking against
+nothing but `libc` and `libm`. It reads a 359 kB flat weight blob instead of the
+ONNX file, so there is no protobuf parser, no runtime and no C++ compiler
+involved. On 10 s of audio, one core:
+
+| implementation | wall time | RTF |
+|---|---|---|
+| C engine (`c/`) | **112.6 ms** | **0.0113** |
+| ONNX Runtime (`cpp/`) | 537.7 ms | 0.0538 |
+| PyTorch, CPU (`infer.py`) | 952.2 ms | 0.0952 |
+
+`aec_infer` is a 47 kB binary. It is checked against the ONNX graph sample by
+sample — 0.582 of a 16-bit LSB on the bundled demo pair, about the same as the
+disagreement between ONNX Runtime and PyTorch themselves — and the FFT has its
+own self-test against a naive DFT. See [`c/README.md`](c/README.md) for the
+build, the `engine.h` API for embedding it, and the one caveat worth knowing
+(the delay estimate is not numerically robust, so at very short segments the
+two paths can differ by ~4 LSB).
+
 ## Training
 
 The corpus is [AEC-Challenge](https://github.com/microsoft/AEC-Challenge)
@@ -153,6 +185,7 @@ python prepare_dataset.py --dataset /path/to/AEC-Challenge --out data   # ~19 GB
 python train.py --data data --out weights/aec_lp.pt                     # ~1 h on one GPU
 python evaluate.py --ckpt weights/aec_lp.pt --limit 500
 python export_onnx.py --ckpt weights/aec_lp.pt --out weights/aec_lp.onnx
+python c/export_weights.py --ckpt weights/aec_lp.pt --out weights/aec_lp.bin
 ```
 
 `--data` / `AEC_DATA_DIR` selects the packed arrays for `train.py` and
