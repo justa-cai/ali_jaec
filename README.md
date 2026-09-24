@@ -10,6 +10,10 @@ plays), it estimates and removes the echo, and returns the near-end speech.
   driven from Python or C++.
 * Training code, evaluation code and a reproducible acceptance suite are all
   included.
+* A browser demo runs the exported model client-side, with no backend:
+  **https://justa-cai.github.io/ali_jaec/** — listen to the example pair, run
+  the inference yourself, or try your own mic/reference files (nothing is
+  uploaded).
 
 ## Results
 
