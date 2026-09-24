@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ali_jaec — 16 kHz 神经网络回声消除</title>
+<meta name="description" content="16 kHz neural acoustic echo cancellation front-end. Demo audio and in-browser ONNX inference.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">16 kHz · acoustic echo cancellation</p>
+    <h1>ali_jaec</h1>
+    <p class="lede">
+      给定麦克风信号与远端参考信号，估计并消除扬声器回声，输出近端语音。
+      0.090 M 参数，10 ms 帧。模型导出为 ONNX，<strong>可以在浏览器里直接跑</strong>——
+      没有后端，第 02 节的结果就是本页用 ONNX Runtime Web 现算出来的。
+    </p>
+    <ul class="facts">
+      <li><span>参数量</span><b>0.090 M</b></li>
+      <li><span>帧长</span><b>10 ms</b></li>
+      <li><span>采样率</span><b>16 kHz</b></li>
+      <li><span>算法延迟</span><b>0</b></li>
+    </ul>
+  </div>
+</header>
+
+<main>
+
+<section class="wrap" id="listen">
+  <h2><span class="num">01</span> 示例音频</h2>
+  <p class="note">
+    来自官方示例的 10 秒录音对。麦克风里同时有近端人声和远端回声；
+    算法输出应当保留近端人声、去掉远端回声。
+  </p>
+
+  <div class="players">
+    <figure class="player" data-kind="mic">
+      <figcaption>
+        <span class="tag tag-mic">近端 mic</span>
+        <span class="sub">麦克风拾取 · 近端人声 + 回声</span>
+      </figcaption>
+      <canvas height="72"></canvas>
+      <audio controls preload="metadata" src="audio/nearend_mic.wav"></audio>
+    </figure>
+
+    <figure class="player" data-kind="ref">
+      <figcaption>
+        <span class="tag tag-ref">远端 ref</span>
+        <span class="sub">扬声器播放 · 回声的来源</span>
+      </figcaption>
+      <canvas height="72"></canvas>
+      <audio controls preload="metadata" src="audio/farend_speech.wav"></audio>
+    </figure>
+
+    <figure class="player" data-kind="out">
+      <figcaption>
+        <span class="tag tag-out">算法后</span>
+        <span class="sub">本模型输出 · 与 mic 时间对齐</span>
+      </figcaption>
+      <canvas height="72"></canvas>
+      <audio controls preload="metadata" src="audio/aec_out.wav"></audio>
+    </figure>
+  </div>
+
+  <p class="hint">先听 <b>近端 mic</b>，再听 <b>算法后</b>。</p>
+</section>
+
+<section class="wrap" id="run">
+  <h2><span class="num">02</span> 浏览器内推理</h2>
+  <p class="note">
+    点击下面的按钮，页面会下载 ONNX 模型并用 ONNX Runtime Web（WebAssembly，单线程）
+    重新计算上面这段音频。结果会覆盖 <b>算法后</b> 播放器，并与预生成的版本逐样本对比。
+  </p>
+
+  <div class="runner">
+    <button id="run-btn" class="primary">在浏览器里跑一遍</button>
+    <span id="run-status" class="status" role="status" aria-live="polite">模型尚未加载</span>
+  </div>
+
+  <div id="run-result" class="result" hidden>
+    <table class="metrics">
+      <tbody>
+        <tr><th>模型加载</th><td id="m-load">—</td></tr>
+        <tr><th>推理耗时</th><td id="m-time">—</td></tr>
+        <tr><th>实时率 RTF</th><td id="m-rtf">—</td></tr>
+        <tr><th>估计回声延迟</th><td id="m-tau">—</td></tr>
+        <tr><th>ERLE（远端活跃帧均值）</th><td id="m-erle">—</td></tr>
+        <tr><th>与预生成结果的最大差异</th><td id="m-diff">—</td></tr>
+      </tbody>
+    </table>
+    <div class="actions">
+      <button id="play-out" class="ghost">播放浏览器算出的结果</button>
+      <a id="dl-out" class="ghost" download="aec_out_browser.wav">下载 WAV</a>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" id="upload">
+  <h2><span class="num">03</span> 试试你自己的音频</h2>
+  <p class="note">
+    选两个 16 kHz 单声道 WAV：近端麦克风与远端参考。文件不会上传到任何地方，
+    全部在本地浏览器里处理。其他采样率会做线性重采样。
+  </p>
+
+  <div class="uploads">
+    <label class="drop">
+      <span>近端 mic</span>
+      <input type="file" id="f-mic" accept="audio/wav,audio/x-wav,.wav">
+      <small id="n-mic">未选择</small>
+    </label>
+    <label class="drop">
+      <span>远端 ref</span>
+      <input type="file" id="f-ref" accept="audio/wav,audio/x-wav,.wav">
+      <small id="n-ref">未选择</small>
+    </label>
+    <button id="run-own" class="primary" disabled>处理</button>
+  </div>
+
+  <div id="own-result" class="result" hidden>
+    <table class="metrics"><tbody>
+      <tr><th>时长</th><td id="o-dur">—</td></tr>
+      <tr><th>估计回声延迟</th><td id="o-tau">—</td></tr>
+      <tr><th>ERLE（远端活跃帧均值）</th><td id="o-erle">—</td></tr>
+      <tr><th>输出电平</th><td id="o-level">—</td></tr>
+    </tbody></table>
+    <div class="actions">
+      <button id="play-own" class="ghost">播放算法输出</button>
+      <a id="dl-own" class="ghost" download="aec_out.wav">下载 WAV</a>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" id="numbers">
+  <h2><span class="num">04</span> 指标</h2>
+  <p class="note">
+    500 个留出测试文件（每个 10 秒）。SI-SDR 对照<b>干净近端语音</b>计算：
+    它是唯一能同时惩罚「残留回声」和「削掉近端」两种失败的单一数字。
+  </p>
+
+  <table class="scores">
+    <thead>
+      <tr><th>指标</th><th>本模型</th><th>已发布参考实现</th><th>验收门槛</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>SI-SDR 均值</td><td class="best">8.830 dB</td><td>5.963 dB</td><td>≥ 6.00</td></tr>
+      <tr><td>SI-SDR 中位数</td><td class="best">8.954 dB</td><td>—</td><td>≥ 6.00</td></tr>
+      <tr><td>ERLE 均值</td><td class="best">15.529 dB</td><td>6.689 dB</td><td>≥ 6.00</td></tr>
+      <tr><td>远端静音段保持度</td><td>−0.671 dB</td><td>−0.525 dB</td><td>≥ −3.00</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note tight">
+    「远端静音段保持度」是远端不说话时输出与麦克风的能量比：0 dB 表示原样通过，
+    负值表示近端被削。设这一项是为了防止「把所有东西都衰减掉」也能拿高分。
+  </p>
+
+  <table class="scores">
+    <thead>
+      <tr><th>真实声学路径</th><th>本模型</th><th>已发布参考实现</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>官方示例对 · ERLE</td><td class="best">12.46 dB</td><td>10.24 dB</td></tr>
+      <tr><td>15 个未见过的真实录音（远端单讲）· ERLE</td><td class="best">11.31 dB</td><td>6.909 dB</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note tight">
+    <b>已知局限：</b>真实混响房间下的双讲场景仍有差距（SI-SDR 3.72 dB，参考实现 8.53 dB）。
+    回声估计来自一份全局滤波器，只能表示「平均房间」；把真实房间回声加进训练试过，
+    结果更差。详见仓库 README 的 Limitations。
+  </p>
+</section>
+
+<section class="wrap" id="how">
+  <h2><span class="num">05</span> 怎么做的</h2>
+  <pre class="diagram">ref  x(n) ─┬─> [ 延迟估计 ]  GCC-PHAT 互相关 → soft-argmax
+           │        │  tau
+           │        v
+           │   对齐参考  x_tau(n)
+           │        │
+mic  d(n) ─┼────────┴─> [ 回声估计 ]  逐频点因果 FIR
+           │                    │  y_hat(n)
+           │                    v
+           │          最小二乘增益  alpha = &lt;Xm, y_hat&gt; / &lt;y_hat, y_hat&gt;
+           │                    │
+           └─────────> e(n) = mask( d(n) - alpha * y_hat(n) )</pre>
+  <ul class="steps">
+    <li><b>延迟估计。</b>GCC-PHAT 互相关经可微 soft-argmax 得到一个标量延迟，
+      据此对齐参考信号。下游就只需要处理趋近于零的残余延迟。</li>
+    <li><b>回声估计。</b>在帧间做因果 FIR，每个频点每个抽头一个复权重。</li>
+    <li><b>最小二乘增益。</b>回声估计只依赖参考信号，所以远端一响它就非零——
+      哪怕麦克风里根本没有回声。此时减掉它会把远端<i>注入</i>输出。
+      增益 <code>&lt;Xm, y_hat&gt; / &lt;y_hat, y_hat&gt;</code> 衡量这份估计究竟解释了多少麦克风能量，
+      有回声时趋近 1，没回声时趋近 0。</li>
+    <li><b>掩码。</b>GRU 在 16 个频带上预测谱掩码，对残余做整形。</li>
+  </ul>
+  <p class="note tight">
+    没有非线性处理级：被消除的始终只是参考信号的线性函数。
+    麦克风侧的非线性（例如参考信号看不到的削波）无法恢复。
+  </p>
+</section>
+
+</main>
+
+<footer class="wrap">
+  <p>
+    <a href="https://github.com/justa-cai/ali_jaec">github.com/justa-cai/ali_jaec</a>
+    · 模型与全部代码均在此仓库
+  </p>
+  <p class="fine">浏览器推理使用 ONNX Runtime Web (WebAssembly · SIMD · 单线程)。</p>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
