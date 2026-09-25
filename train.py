@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
-"""Train the AEC front-end.
+"""Train the AEC front-end in two stages.
 
-The corpus itself is single-talk-ish: the echo path in every training file is a
-single tap (``mic = near_end + g * ref delayed by d``) with a short delay, which
-means the trained filter would never see a realistic room. Two things are mixed
-into every batch to fix that:
+Stage 1 (--stage tde) trains only the delay estimator, on its own supervised
+loss: synthetic paths carry an exact delay label, and the SI-SDR gradient is
+deliberately not shared with this stage -- sharing it makes the two objectives
+pull the delay in opposite directions and the run stops improving. Stage 2
+(--stage lp) freezes the estimator and trains the mask network (and the
+whitener and the synthesis weight) on the output objective.
 
-  * **synthetic paths with a known delay.** ``mic = near_end + g * ref shifted
-    by D`` for D drawn over the full range the estimator supports. These carry
-    an exact label, which is what actually teaches the delay estimator -- the
-    SI-SDR gradient through the fractional delay is orders of magnitude weaker
-    than through the echo filter. The fraction anneals to zero over
-    ``--syn-anneal`` epochs so the net finishes on the real distribution.
-  * **the corpus as-is**, which keeps the in-domain distribution.
+The corpus's echo paths are single-tap, so two things are mixed into every
+batch to widen the distribution:
+
+  * **synthetic paths with a known delay** (``mic = near + g * ref shifted by
+    d``), which carry the delay labels stage 1 needs. The fraction anneals to
+    zero over ``--syn-anneal`` epochs so the net finishes on the real
+    distribution.
+  * **an optional second corpus** (``--extra-data``), mixed in per sample at
+    ``--extra-frac``. Training the mask on one corpus alone teaches it that
+    corpus's statistics; a second, differently-built corpus keeps it honest.
 
 Usage:
-    python train.py --data data --out weights/aec_lp.pt
+    python train.py --stage tde --out weights/stage1.pt
+    python train.py --stage lp --init weights/stage1.pt --out weights/aec_lp.pt
 """
 import argparse
 import sys
@@ -27,21 +33,29 @@ import torch
 
 from dataset import load_arrays, load_meta, resolve_data, split_rows
 from model import AecFrontend, si_sdr
-from stft import SR, sqrt_hann, stft
+from stft import SR
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--data', help='packed dataset dir (or set AEC_DATA_DIR)')
+    ap.add_argument('--extra-data',
+                    help='optional second packed dataset, mixed in per sample')
+    ap.add_argument('--extra-frac', type=float, default=0.3,
+                    help='fraction of each batch drawn from --extra-data')
     ap.add_argument('--out', default='weights/aec_lp.pt')
-    ap.add_argument('--epochs', type=int, default=80)
+    ap.add_argument('--stage', default='lp', choices=['tde', 'lp'],
+                    help="'tde' trains only the delay estimator; 'lp' freezes "
+                         "it and trains the mask network")
+    ap.add_argument('--init', help='checkpoint to initialise from (the other '
+                                   "stage's output)")
+    ap.add_argument('--epochs', type=int, default=40)
     ap.add_argument('--steps-per-epoch', type=int, default=500)
     ap.add_argument('--batch', type=int, default=16)
     ap.add_argument('--crop', type=float, default=3.0, help='seconds per sample')
     ap.add_argument('--lr', type=float, default=2e-3)
     ap.add_argument('--hid', type=int, default=96)
     ap.add_argument('--bands', type=int, default=16)
-    ap.add_argument('--taps', type=int, default=64)
     ap.add_argument('--max-shift', type=int, default=10240,
                     help='largest synthetic echo delay, in samples')
     ap.add_argument('--syn-frac', type=float, default=0.5,
@@ -50,12 +64,17 @@ def main():
                     help='anneal --syn-frac to zero over this many epochs')
     ap.add_argument('--tde-weight', type=float, default=1.0,
                     help='weight of the delay loss, in units of 1000 samples')
-    ap.add_argument('--echo-weight', type=float, default=1.0,
-                    help='weight of the supervised echo-estimate loss')
-    ap.add_argument('--adapt-gain', type=int, default=5,
-                    help='frames of smoothing for the least-squares echo gain '
-                         '(0 disables). Must be set at training time, not just '
-                         'at inference, or the mask learns to compensate for it.')
+    ap.add_argument('--tde-mode', default='stream', choices=['stream', 'global'],
+                    help="delay handling at stage 2: 'stream' acquires once and "
+                         "tracks per frame (the deployable mode, and what the "
+                         "mask is trained against); 'global' uses one estimate "
+                         "per utterance. Stage 1 always uses 'global' -- the "
+                         "tracker has no trainable parameters and no gradient.")
+    ap.add_argument('--farend-gate', type=float, default=0.005,
+                    help='how strongly quiet reference bins force the mask to 1. '
+                         'An inference-time knob, recorded in the checkpoint; '
+                         'smaller values suppress more echo and attenuate more '
+                         'near end.')
     ap.add_argument('--mic-feat', action=argparse.BooleanOptionalAction,
                     default=True,
                     help='feed the microphone band energies to the mask net')
@@ -74,6 +93,14 @@ def main():
     mic, ref, tgt = load_arrays(root)
     meta = load_meta(root)
     ids = {sp: split_rows(meta, sp) for sp in ('train', 'test')}
+    ex = None
+    if args.extra_data:
+        eroot = resolve_data(args.extra_data)
+        emic, eref, etgt = load_arrays(eroot)
+        eids = split_rows(load_meta(eroot), 'train')
+        ex = (emic, eref, etgt, eids)
+        print('extra  : %s (%d train rows) at %.2f'
+              % (eroot, len(eids), args.extra_frac), flush=True)
 
     rng = np.random.default_rng(args.seed)
     tr_ids = ids['train']
@@ -83,38 +110,69 @@ def main():
     print('split  : %d train / %d val / %d test'
           % (len(tr_ids), len(val_ids), len(ids['test'])), flush=True)
 
-    model = AecFrontend(hid=args.hid, bands=args.bands, filt_taps=args.taps,
-                        max_delay=args.max_shift, use_mic_feat=args.mic_feat).to(dev)
-    model.adapt_gain = args.adapt_gain
+    model = AecFrontend(hid=args.hid, bands=args.bands,
+                        max_delay=args.max_shift,
+                        use_mic_feat=args.mic_feat).to(dev)
+    model.farend_gate = args.farend_gate
+    model.tde_mode = 'global' if args.stage == 'tde' else args.tde_mode
     print('params : %.3f M' % (sum(p.numel() for p in model.parameters()) / 1e6),
           flush=True)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    if args.init:
+        ck0 = torch.load(args.init, map_location='cpu', weights_only=False)
+        cur = model.state_dict()
+        # load only what matches: the point of the stage boundary is that the
+        # two halves do not share weights, and a strict load would reject any
+        # shape or presence difference
+        keep = {k: v for k, v in ck0['model'].items()
+                if k in cur and cur[k].shape == v.shape}
+        model.load_state_dict(keep, strict=False)
+        print('init   : %d tensors from %s (%d skipped)'
+              % (len(keep), args.init, len(ck0['model']) - len(keep)), flush=True)
+
+    tde_params = [p for n, p in model.named_parameters() if n.startswith('tde.')]
+    other_params = [p for n, p in model.named_parameters()
+                    if not n.startswith('tde.')]
+    if args.stage == 'tde':
+        for p in other_params:
+            p.requires_grad_(False)
+        print('stage tde: %d delay tensors trainable, %d frozen elsewhere'
+              % (len(tde_params), len(other_params)), flush=True)
+    else:
+        for p in tde_params:
+            p.requires_grad_(False)
+        print('stage lp: delay estimator frozen (%d tensors), %d trainable '
+              'elsewhere' % (len(tde_params), len(other_params)), flush=True)
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    assert trainable, 'nothing to train'
+    opt = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.OneCycleLR(
         opt, max_lr=args.lr, total_steps=args.epochs * args.steps_per_epoch,
         pct_start=0.1)
 
     def batch(ids_, n, syn_frac):
-        """Returns mic, ref, target, delay label, synthetic flag, true echo."""
+        """Returns mic, ref, target, delay label, synthetic flag."""
         idx = rng.choice(ids_, size=n, replace=False)
         m = np.empty((n, crop), np.float32)
         f = np.empty((n, crop), np.float32)
         t = np.empty((n, crop), np.float32)
         label = np.zeros(n, np.float32)
         synth = np.zeros(n, np.float32)
-        echo = np.zeros((n, crop), np.float32)
         for k, j in enumerate(idx):
-            s = rng.integers(0, mic.shape[1] - crop)
-            mc = mic[j, s:s + crop]
-            fc = ref[j, s:s + crop]
-            tc = tgt[j, s:s + crop]
+            if ex is not None and rng.random() < args.extra_frac:
+                src_m, src_f, src_t, src_ids = ex
+                j = src_ids[rng.integers(0, len(src_ids))]
+            else:
+                src_m, src_f, src_t = mic, ref, tgt
+            s = rng.integers(0, src_m.shape[1] - crop)
+            mc = src_m[j, s:s + crop]
+            fc = src_f[j, s:s + crop]
+            tc = src_t[j, s:s + crop]
             if syn_frac and rng.random() < syn_frac:
                 d = int(rng.integers(0, args.max_shift + 1))
                 g = rng.uniform(0.1, 0.7)
-                e = np.zeros(crop, np.float32)
-                e[d:] = (g * fc)[:crop - d]
-                mc = tc + e
-                echo[k] = e
+                mc = tc + np.concatenate(
+                    [np.zeros(d, np.float32), (g * fc)[:crop - d]])
                 label[k] = d
                 synth[k] = 1.0
             m[k] = mc
@@ -122,14 +180,14 @@ def main():
             t[k] = tc
         to = torch.from_numpy
         return (to(m).to(dev), to(f).to(dev), to(t).to(dev),
-                to(label).to(dev), to(synth).to(dev), to(echo).to(dev))
+                to(label).to(dev), to(synth).to(dev))
 
     def silence_penalty(y, m, f, win=1600, hop=800, thresh_db=-45.0):
         """Penalise output energy removed where the far end is silent.
 
         There is no echo to cancel there, so the output must pass the
-        microphone through; without this the mask closes on those frames too
-        and eats the near-end.
+        microphone through; the far-end gate already forces this in bins the
+        reference leaves quiet, and this term covers the frames it does not.
         """
         _, length = y.shape
         rms_m = m.pow(2).mean(-1, keepdim=True).sqrt() + 1e-12
@@ -169,39 +227,30 @@ def main():
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     for ep in range(args.epochs):
         model.train()
-        total = tde_total = echo_total = 0.0
+        total = tde_total = 0.0
         syn_now = (args.syn_frac * max(0.0, 1.0 - ep / args.syn_anneal)
                    if args.syn_anneal else args.syn_frac)
         for _ in range(args.steps_per_epoch):
-            m, f, t, label, synth, echo = batch(tr_ids, args.batch, syn_now)
+            m, f, t, label, synth = batch(tr_ids, args.batch, syn_now)
             y, mask, tau = model(m, f, length=crop)
-            loss = -si_sdr(y, t).mean()
-            loss = loss + 3.0 * silence_penalty(y, m, f)
+            if args.stage == 'tde':
+                # the delay estimator is trained only by its own supervised
+                # loss; sharing the SI-SDR gradient with it makes the two
+                # objectives fight and the run stops improving
+                loss = torch.zeros((), device=dev)
+            else:
+                loss = -si_sdr(y, t).mean()
+                loss = loss + 3.0 * silence_penalty(y, m, f)
 
-            # the delay estimator is trained only by its own supervised loss;
-            # sharing the SI-SDR gradient with it makes the two objectives
-            # fight and the run stops improving
-            if tau is not None and synth.sum() > 0:
+            if tau is not None and tau.requires_grad and synth.sum() > 0:
                 sel = synth > 0.5
                 tde_loss = (tau[sel] - label[sel].unsqueeze(1)).abs().mean() / 1000.0
                 loss = loss + args.tde_weight * tde_loss
                 tde_total += float(tde_loss)
 
-            # the echo estimate is trained directly against the known echo, for
-            # the same reason: on the SI-SDR gradient alone the filter is far
-            # too slow to learn, because the mask above it can always undo it
-            if args.echo_weight and synth.sum() > 0:
-                sel = synth > 0.5
-                target = stft(echo[sel], sqrt_hann().to(dev))
-                num = (model.last_acc[sel] - target).abs().mean(dim=(1, 2))
-                den = target.abs().mean(dim=(1, 2)) + 1e-6
-                echo_loss = (num / den).mean()
-                loss = loss + args.echo_weight * echo_loss
-                echo_total += float(echo_loss)
-
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            torch.nn.utils.clip_grad_norm_(trainable, 5.0)
             opt.step()
             sched.step()
             total += float(loss)
@@ -209,8 +258,6 @@ def main():
         msg = 'ep %3d  loss %8.3f' % (ep, total / args.steps_per_epoch)
         if tde_total:
             msg += '  tde %.4f' % (tde_total / args.steps_per_epoch)
-        if echo_total:
-            msg += '  echo %.4f' % (echo_total / args.steps_per_epoch)
         msg += '  %5.0fs' % (time.time() - t0)
 
         if (ep + 1) % 5 == 0 or ep == args.epochs - 1:
@@ -226,17 +273,18 @@ def main():
                 best = float(s.mean())
                 torch.save({'model': model.state_dict(),
                             'config': dict(hid=args.hid, bands=args.bands,
-                                           filt_taps=args.taps,
                                            max_delay=args.max_shift,
-                                           use_mic_feat=args.mic_feat,
-                                           echo_gate=False),
-                            'adapt_gain': args.adapt_gain,
+                                           use_mic_feat=args.mic_feat),
+                            'knobs': dict(tde_mode=model.tde_mode,
+                                          farend_gate=args.farend_gate,
+                                          warmup=352),
                             'val_si_sdr': best,
                             'args': vars(args)}, args.out)
                 msg += '  *saved*'
         print(msg, flush=True)
 
     print('\nbest val SI-SDR: %.3f dB -> %s' % (best, args.out))
+    return 0
 
 
 if __name__ == '__main__':

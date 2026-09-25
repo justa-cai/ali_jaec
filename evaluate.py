@@ -29,10 +29,11 @@ def main():
     dev = args.device if torch.cuda.is_available() else 'cpu'
     ck = torch.load(args.ckpt, map_location='cpu', weights_only=False)
     model = AecFrontend(**ck['config']).to(dev).eval()
-    model.load_state_dict(ck['model'])
-    model.adapt_gain = ck.get('adapt_gain', 0)
-    print('loaded %s  (val SI-SDR at save: %s)'
-          % (args.ckpt, ck.get('val_si_sdr')))
+    model.load_state_dict(ck['model'], strict=False)  # window is a buffer
+    for k, v in ck.get('knobs', {}).items():
+        setattr(model, k, v)
+    print('loaded %s  (val SI-SDR at save: %s)  knobs: %s'
+          % (args.ckpt, ck.get('val_si_sdr'), ck.get('knobs', {})))
 
     mic, ref, tgt = load_arrays(root)
     ids = split_rows(load_meta(root), 'test')[:args.limit]

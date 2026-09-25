@@ -62,8 +62,9 @@ class TorchRunner:
         from model import AecFrontend
         ck = torch.load(ckpt, map_location=device, weights_only=False)
         self.model = AecFrontend(**ck['config']).to(device).eval()
-        self.model.load_state_dict(ck['model'])
-        self.model.adapt_gain = ck.get('adapt_gain', 0)
+        self.model.load_state_dict(ck['model'], strict=False)  # window is a buffer
+        for k, v in ck.get('knobs', {}).items():
+            setattr(self.model, k, v)
         self.torch = torch
         self.device = device
 

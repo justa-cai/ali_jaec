@@ -1,5 +1,5 @@
 # Training and evaluation are pure PyTorch; onnx/onnxruntime are only needed
-# for export_onnx.py, infer.py and the c/test_equiv.py acceptance test.
+# for export_onnx.py and infer.py.
 torch>=2.4
 numpy>=1.24
 soundfile>=0.12

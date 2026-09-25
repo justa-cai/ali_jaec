@@ -3,28 +3,42 @@
 The model is a two-stage front-end operating on the microphone signal ``d``
 and the far-end reference ``x``:
 
-    1. TDE -- time-delay estimation. A GCC-PHAT cross-correlation is reduced to
-       a single scalar bulk delay tau by a differentiable soft-argmax plus a
-       small regression head, and the reference is then aligned into x_tau.
-       Estimating the delay first is what lets the second stage be simple: it
-       only ever sees the *residual* delay.
+    1. TDE -- time-delay estimation. A GCC-PHAT cross-correlation is reduced
+       to a scalar bulk delay by a differentiable soft-argmax plus a small
+       regression head. At inference the estimator runs once, on the first
+       second of audio, to ACQUIRE the delay; a classical tracker then follows
+       it frame by frame, searching only +-100 samples around the running
+       estimate on a 10 ms grid and shifting the reference by a per-frame
+       integer delay. A whole-recording FFT is therefore never needed, and the
+       delay can drift within an utterance without the alignment being lost.
 
-    2. LP -- linear processing. A per-frequency-bin causal FIR on the aligned
-       reference produces an echo estimate y_hat, which is subtracted from the
-       microphone. A per-bin least-squares gain validates the estimate against
-       the actual microphone content, and a recurrent network over band
-       energies predicts a spectral mask that shapes the residual.
+    2. LP -- linear processing. A recurrent network over whitened band
+       energies predicts a per-bin spectral gain applied DIRECTLY to the
+       microphone:
 
-    e(n) = mask( d(n) - alpha * y_hat(n) )
+           e(n) = mask(n) * d(n)
+
+       The reference does not contribute any signal to the output -- it
+       steers the mask, through the aligned features, and nothing else. Two
+       properties follow from that, both structural rather than trained:
+
+         * a silent microphone gives an exactly silent output, and
+         * wherever the reference has no energy the mask is forced to 1, so
+           near-end speech in those bins passes through untouched.
+
+       The whitening (one learned per-bin weight, shared by microphone and
+       reference) means the network learns *how much* echo is present rather
+       than the spectral colour of the far end, and a learned per-bin
+       synthesis weight shapes the output before the overlap-add.
 
 Everything runs on a 16 kHz mono signal through a 512/160 sqrt-Hann STFT
-(``stft.py``). The output is time-aligned with the microphone: the analysis is
-causal but the whole recording is available, so synthesis reconstructs it in
-place rather than at a 352-sample offset. There is no nonlinear processing
-stage -- only a linear function of the reference is ever removed.
+(``stft.py``). The output is time-aligned with the microphone. There is no
+separate nonlinear-processing stage.
 
-All operations are chosen so the module exports to ONNX as-is; see
-``export_onnx.py``. Keep it that way if you edit this file.
+Two runtime modes: ``tde_mode='stream'`` (default) tracks the delay per frame
+and is what a live deployment wants; ``tde_mode='global'`` estimates one delay
+for the whole recording and is the mode that exports to ONNX, because a
+stateful per-frame loop does not trace. ``export_onnx.py`` uses the latter.
 """
 import torch
 import torch.nn as nn
@@ -105,164 +119,192 @@ class DelayEstimator(nn.Module):
         return torch.clamp(tau + self.reg(feats), -self.max_delay, self.max_delay), R
 
 
+class SpectralWhitener(nn.Module):
+    """One learned per-bin weight, shared by the microphone and the reference.
+
+    Applied before the band projection it normalises the far end's spectral
+    tilt out of the features: the mask network then has to learn how much
+    echo is present, not what colour the loudspeaker and the room give it.
+    Stored as a (F, 2) real parameter and used through its magnitude, which
+    keeps the whole feature path in real arithmetic.
+    """
+
+    def __init__(self, freq=FREQ):
+        super().__init__()
+        self.w = nn.Parameter(torch.ones(freq, 2))
+
+    def magnitude(self):
+        return torch.sqrt(self.w[..., 0] ** 2 + self.w[..., 1] ** 2)   # (F,)
+
+
+class DelayTracker:
+    """Classical per-frame tracker around a once-off acquisition. No parameters.
+
+    The estimator (``DelayEstimator``) answers "where is the echo, anywhere in
+    the supported range" -- which needs a long window and a wide search. This
+    tracker answers "has it moved since the last frame", which needs neither:
+    a GCC-PHAT over the trailing second, a peak search in
+    ``[tau - track, tau + track]`` and a leaky update per 10 ms frame.
+
+    A pure narrow tracker can never find a 2528-sample delay from zero, which
+    is why the acquisition step exists; and a whole-recording estimate can
+    never follow a delay that drifts mid-utterance, which is why the tracker
+    exists. Frames inside the first ``win`` samples see a window that extends
+    into the future -- unavoidable with a fixed-length window, and harmless in
+    practice, since the tracker only steers features.
+    """
+
+    def __init__(self, win=16000, hop=160, track=100, smooth=0.25):
+        self.win, self.hop, self.track, self.smooth = win, hop, track, smooth
+
+    @torch.no_grad()
+    def __call__(self, tde, mic, ref):
+        B, T = mic.shape
+        dev = mic.device
+        W = min(self.win, T)
+        tau0, _ = tde(mic[:, :W], ref[:, :W])
+        tau0 = tau0.round().long().clamp(min=0, max=max(0, T - 1))
+
+        starts = torch.arange(0, T, self.hop, device=dev)
+        s_cl = starts.clamp(max=max(0, T - W))
+        idx = s_cl[:, None] + torch.arange(W, device=dev)[None, :]
+        mw = mic[:, idx.reshape(-1)].reshape(B, -1, W)
+        rw = ref[:, idx.reshape(-1)].reshape(B, -1, W)
+
+        nfft = next_pow2(2 * W)
+        G = torch.fft.rfft(mw, n=nfft, dim=-1) * torch.fft.rfft(rw, n=nfft, dim=-1).conj()
+        cc = torch.fft.irfft(G / (G.abs() + 1e-6), n=nfft, dim=-1)   # (B,F,nfft)
+        Fq = cc.shape[1]
+
+        offs = torch.arange(-self.track, self.track + 1, device=dev)
+        taus = torch.zeros(B, Fq, dtype=torch.long, device=dev)
+        taus[:, 0] = tau0[:, 0]
+        for f in range(1, Fq):
+            cur = taus[:, f - 1]
+            cand = (cur[:, None] + offs[None, :]).clamp(min=0)        # (B,2t+1)
+            best = cand.gather(1, cc[:, f, :].gather(1, cand % nfft)
+                                .argmax(1, keepdim=True))
+            # leaky update; clamped at 0 because an echo cannot lead the
+            # reference (a negative delay would index past the buffer)
+            taus[:, f] = (cur + (best[:, 0] - cur) * self.smooth) \
+                .round().long().clamp(min=0)
+
+        tau_seq = taus.repeat_interleave(self.hop, dim=1)[:, :T]
+        tail = torch.zeros(B, T + int(tau_seq.max()) + 1,
+                           dtype=ref.dtype, device=dev)
+        tail[:, :T] = ref
+        pos = (torch.arange(T, device=dev)[None, :] - tau_seq).clamp(min=0)
+        aligned = tail.gather(1, pos)
+        return aligned, tau_seq[:, :1].float()
+
+
 class AecFrontend(nn.Module):
-    """(mic, ref) waveforms -> echo-cancelled microphone waveform.
+    """(mic, ref) waveforms -> echo-suppressed microphone waveform.
 
     Args:
         hid: recurrent width of the mask network.
         bands: number of frequency bands the mask network works on.
-        filt_taps: length, in frames, of the per-bin FIR on the reference.
         max_delay: lag range of the delay estimator, in samples.
-        echo_gate: if set, the network scales the echo estimate instead of
-            masking the output (kept for experimentation).
         use_mic_feat: also feed the microphone's own band energies to the mask
-            network. Without them the network cannot distinguish "echo present"
-            from "the far end is loud but the microphone is silent", because the
-            residual bands are then just the echo estimate itself.
+            network. Without them the network cannot distinguish "echo
+            present" from "the far end is loud but the microphone is silent",
+            because the reference bands look the same in both cases.
+
+    Inference-time knobs (not trained, stored in the checkpoint):
+
+        tde_mode     'stream' (acquire + track per frame; default) or
+                     'global' (one estimate per recording; the ONNX-exportable
+                     mode -- a stateful per-frame loop does not trace).
+        farend_gate  how strongly quiet reference bins force the mask to 1.
+                     0 disables; smaller values suppress more.
+        warmup       samples of head cross-fade to the microphone. The
+                     overlap-add normaliser is ~4e4 times smaller at sample 1
+                     than at steady state, so any spectrum modification is
+                     amplified there; blending to the input for the first
+                     NFFT-HOP samples removes it.
     """
 
-    def __init__(self, hid=96, bands=16, filt_taps=64, max_delay=10240,
-                 echo_gate=False, use_mic_feat=True):
+    def __init__(self, hid=96, bands=16, max_delay=10240, use_mic_feat=True):
         super().__init__()
         self.register_buffer('window', sqrt_hann())
         self.bank = SpectralBank(FREQ, bands)
+        self.whiten = SpectralWhitener(FREQ)
         self.tde = DelayEstimator(max_delay=max_delay)
-        self.echo_gate = echo_gate
+        self.tracker = DelayTracker()
         self.use_mic_feat = use_mic_feat
         self.max_delay = max_delay
         self.bands = bands
-        # inference-time knobs (not trained)
-        self.adapt_gain = 0         # frames of smoothing for the LS echo gain
-        self.mask_smooth = 0        # frames of averaging for the shaping mask
+        # inference-time knobs
+        self.tde_mode = 'stream'
+        self.farend_gate = 0.005
+        self.warmup = 352
+        self.mask_smooth = 0        # frames of averaging for the mask
 
-        # --- echo estimate: a causal per-bin FIR on the aligned reference.
-        # TDE has already removed the bulk delay, so a short filter suffices.
-        self.filt_taps = filt_taps
-        self.filt = nn.Parameter(torch.zeros(FREQ, filt_taps, 2))
-        with torch.no_grad():
-            # Initialise as the identity, not as a no-op: the reference is
-            # already aligned, so the echo estimate starts out as (a scaled
-            # copy of) the reference itself.
-            self.filt.data[:, 0, 0] = 1.0
-
-        # --- mask network over band energies
+        # mask network over whitened band energies
         self.gru = nn.GRU((4 if use_mic_feat else 3) * bands, hid, batch_first=True)
         self.head = nn.Linear(hid, bands)
-        if echo_gate:
-            self.mask_proj = nn.Linear(bands, 2 * FREQ)
-            nn.init.normal_(self.mask_proj.weight, std=1e-3)
-            with torch.no_grad():
-                self.mask_proj.bias[:FREQ].fill_(-1.0986)   # |g| = 0.5 initially
-                self.mask_proj.bias[FREQ:].zero_()
-        else:
-            self.mask_proj = nn.Linear(bands, FREQ)
-            nn.init.normal_(self.mask_proj.weight, std=1e-3)
-            nn.init.constant_(self.mask_proj.bias, 4.0)     # sigmoid(4) ~ 0.98
+        self.mask_proj = nn.Linear(bands, FREQ)
+        nn.init.normal_(self.mask_proj.weight, std=1e-3)
+        nn.init.constant_(self.mask_proj.bias, 4.0)      # sigmoid(4) ~ 0.98
+
+        # per-bin synthesis weight on the output, identity-initialised
+        self.out_filt = nn.Parameter(torch.zeros(FREQ, 2))
+        with torch.no_grad():
+            self.out_filt.data[:, 0] = 1.0
 
     # ------------------------------------------------------------------ main
     def forward(self, mic, ref, length=None):
-        tau, _ = self.tde(mic, ref)
-        ref_aligned = fractional_delay(ref, tau, self.max_delay)
+        if self.tde_mode == 'stream':
+            ref, tau = self.tracker(self.tde, mic, ref)
+            ref_aligned = ref
+        else:
+            tau, _ = self.tde(mic, ref)
+            ref_aligned = fractional_delay(ref, tau, self.max_delay)
 
-        Xm = stft(mic, self.window)                    # (B, T, F)
+        Xm = stft(mic, self.window)                       # (B, T, F) complex
         Xr = stft(ref_aligned, self.window)
 
-        acc = self.echo_estimate(Xr)                   # the echo estimate
-        self.last_acc = acc                            # for echo supervision
-        if self.adapt_gain:
-            gain = self.adaptive_gain(Xm, acc, self.adapt_gain)
-            if gain is not None:
-                acc = gain * acc
-        residual = Xm - acc
-
-        bands = [self.bank(residual), self.bank(Xr),
-                 self.bank(residual) * self.bank(Xr)]
+        # whitened band features; the whitener acts on magnitudes only
+        wm = self.whiten.magnitude()                      # (F,)
+        Bm = self.bank(Xm.abs() * wm)
+        Br = self.bank(Xr.abs() * wm)
+        feats = [Bm, Br, Bm * Br]
         if self.use_mic_feat:
-            bands.append(self.bank(Xm))
-        h, _ = self.gru(torch.cat(bands, dim=-1))      # (B, T, hid)
-        g = torch.sigmoid(self.head(h))                # (B, T, bands)
+            feats.append(Bm)
+        h, _ = self.gru(torch.cat(feats, dim=-1))         # (B, T, hid)
+        g = torch.sigmoid(self.head(h))                   # (B, T, bands)
+        mask = torch.sigmoid(self.mask_proj(g))           # (B, T, F)
 
-        if self.echo_gate:
-            raw = self.mask_proj(g)
-            phase = raw[..., FREQ:]
-            mag = 2.0 * torch.sigmoid(raw[..., :FREQ])
-            mask = torch.complex(mag * torch.cos(phase), mag * torch.sin(phase))
-            Y = Xm - self.smooth(mask, self.mask_smooth) * acc
-        else:
-            mask = torch.sigmoid(self.mask_proj(g))    # (B, T, F)
-            Y = residual * self.smooth(mask, self.mask_smooth)
+        # far-end gate: where the reference carries no energy there is nothing
+        # to suppress, so the mask is forced to 1 and the near end passes
+        # through untouched -- by construction, not by a penalty.
+        if self.farend_gate:
+            p = Xr.abs() ** 2                              # (B, T, F)
+            # per-BIN mean over time, matching how the model was trained
+            act = p / (p + self.farend_gate * p.mean(dim=1, keepdim=True) + 1e-12)
+            mask = 1.0 + act * (mask - 1.0)
+        mask = self.smooth(mask, self.mask_smooth)
 
-        return istft(Y, self.window, length=length), mask, tau
+        Y = Xm * mask
+        # per-bin synthesis weight (complex, expanded to stay ONNX-friendly)
+        of = self.out_filt
+        Y = torch.complex(Y.real * of[:, 0] - Y.imag * of[:, 1],
+                          Y.real * of[:, 1] + Y.imag * of[:, 0])
+        y = istft(Y, self.window, length=length)
 
-    # --------------------------------------------------------- components
-    def echo_estimate(self, Xr):
-        """sum_k filt[k] * ref shifted by k frames, per frequency bin.
+        if self.warmup:
+            k = min(self.warmup, y.shape[-1])
+            ramp = 0.5 - 0.5 * torch.cos(
+                torch.pi * torch.arange(k, device=y.device, dtype=y.dtype) / (k - 1))
+            y = torch.cat([y[..., :k] * ramp + mic[..., :k] * (1.0 - ramp),
+                           y[..., k:]], dim=-1)
+        return y, mask, tau
 
-        The complex product is expanded into real and imaginary parts and the
-        complex tensor is only assembled at the end. Slicing, unsqueezing and
-        concatenating complex tensors are not expressible in the ONNX op set,
-        so the whole module keeps complex values at the outermost level only.
-        """
-        T = Xr.shape[1]
-        xr, xi = Xr.real, Xr.imag
-        wre, wim = self.filt[..., 0], self.filt[..., 1]            # (F, taps)
-        acc_r = acc_i = None
-        for k in range(self.filt_taps):
-            if k == 0:
-                sr, si = xr, xi
-            else:
-                shift = (0, 0, k, 0)
-                sr = F.pad(xr, shift)[:, :T]
-                si = F.pad(xi, shift)[:, :T]
-            a = wre[:, k][None, None, :]
-            b = wim[:, k][None, None, :]
-            tr = sr * a - si * b
-            ti = sr * b + si * a
-            acc_r = tr if acc_r is None else acc_r + tr
-            acc_i = ti if acc_i is None else acc_i + ti
-        return torch.complex(acc_r, acc_i)
-
-    def adaptive_gain(self, Xm, acc, k):
-        """Closed-form per-bin least-squares gain on the echo estimate.
-
-        The estimate depends only on the reference, so it is non-zero whenever
-        the far end is playing -- even when the microphone contains no echo at
-        all, in which case subtracting it injects the far end into the output.
-        The least-squares gain
-
-            alpha = <Xm, acc> / <acc, acc>
-
-        measures how much of the microphone the estimate actually explains: it
-        is close to one where the estimate is right and close to zero where
-        there is nothing to cancel. The denominator is regularised relative to
-        the bin's own power (an absolute epsilon lets the gain explode where the
-        estimate vanishes) and the magnitude is clamped.
-
-        Averages over ``k`` frames (odd, 1 disables).
-        """
-        if k is None or k <= 1:
-            return None
-        mr, mi = Xm.real, Xm.imag
-        ar, ai = acc.real, acc.imag
-        # <Xm, acc> and <acc, acc>, per bin
-        cross_r = time_average(mr * ar + mi * ai, k)
-        cross_i = time_average(mi * ar - mr * ai, k)
-        power = time_average(ar * ar + ai * ai, k)
-        alpha = torch.complex(cross_r, cross_i) / (power + 1e-3 * power.mean() + 1e-12)
-        return alpha / (alpha.abs() + 1e-9) * alpha.abs().clamp(max=2.0)
-
+    # ------------------------------------------------------------ components
     def smooth(self, m, k):
-        """Average a mask over ``k`` frames (odd; 1 disables).
-
-        The trained mask moves quickly -- the 99th percentile of its
-        frame-to-frame change is 0.6 over 10 ms -- and that fast modulation is
-        what makes suppression sound rough and punches spectral holes in the
-        near-end. Light smoothing removes it at no cost in cancellation.
-        """
+        """Average a mask over ``k`` frames (odd; 1 disables)."""
         if k is None or k <= 1:
             return m
-        if torch.is_complex(m):
-            return torch.complex(time_average(m.real, k), time_average(m.imag, k))
         return time_average(m, k)
 
 

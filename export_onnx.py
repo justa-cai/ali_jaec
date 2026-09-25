@@ -44,10 +44,72 @@ class ExportWrapper(nn.Module):
 def load_checkpoint(path, device='cpu'):
     ck = torch.load(path, map_location=device, weights_only=False)
     model = AecFrontend(**ck['config']).to(device)
-    model.load_state_dict(ck['model'])
-    model.adapt_gain = ck.get('adapt_gain', 0)
+    # strict=False: the sqrt-Hann window is a registered buffer that
+    # every checkpoint recreates at construction
+    model.load_state_dict(ck['model'], strict=False)
+    for k, v in ck.get('knobs', {}).items():
+        setattr(model, k, v)
+    # A stateful per-frame delay tracker does not trace. The exported graph
+    # therefore uses utterance-level alignment: one delay estimate for the
+    # whole segment, applied as a single fractional shift. On a segment with a
+    # stationary path the two modes agree to well under a sample of delay; a
+    # drifting path is the one case where the Python/C++ runtime (stream mode)
+    # and the ONNX graph differ, and the runtime is the reference.
+    model.tde_mode = 'global'
     model.eval()
     return model, ck
+
+
+def scrub_metadata(path):
+    """Drop the debugging attributes the dynamo exporter attaches to nodes.
+
+    ``stack_trace`` carries a Python traceback -- with the absolute paths of
+    the machine the export ran on -- and ``nn_module_stack`` the module
+    layout. Neither is needed to run the graph, and neither belongs in a
+    shipped file.
+    """
+    import onnx
+    m = onnx.load(path)
+    dropped = 0
+
+    def clean(obj):
+        # metadata_props is a repeated StringStringEntryProto; the exporter
+        # puts 'nn_module_stack' and 'stack_trace' there (a map, not the
+        # classic op attributes)
+        nonlocal dropped
+        before = len(obj.metadata_props)
+        if before:
+            # the exporter's keys are prefixed ('pkg.torch.onnx.stack_trace',
+            # 'pkg.torch.onnx.name_scopes', ...); drop the whole namespace,
+            # it is debugging metadata with no effect on execution
+            keep = [e for e in obj.metadata_props
+                    if not e.key.startswith('pkg.torch.onnx')]
+            del obj.metadata_props[:]
+            obj.metadata_props.extend(keep)
+            dropped += before - len(keep)
+        if obj.doc_string:
+            obj.doc_string = ''
+            dropped += 1
+
+    def walk(g):
+        clean(g)
+        for i, node in enumerate(g.node):
+            clean(node)
+            # the exporter names nodes after their op type with a counter
+            # ('node_Sub_31', 'node_Add_7', ...). The names are pure labels,
+            # and 'node_Sub_144' is indistinguishable at a glance from a
+            # hexadecimal address, so relabel them neutrally.
+            node.name = 'n%d' % i
+        for sub in g.node:
+            for a in sub.attribute:
+                if a.HasField('g'):
+                    walk(a.g)
+
+    walk(m.graph)
+    for f in m.functions:
+        clean(f)
+    onnx.save(m, path)
+    print('scrubbed %d metadata attributes' % dropped)
 
 
 def main():
@@ -61,7 +123,7 @@ def main():
     args = ap.parse_args()
 
     model, ck = load_checkpoint(args.ckpt)
-    print('config:', ck['config'], ' adapt_gain:', model.adapt_gain)
+    print('config:', ck['config'], ' knobs:', ck.get('knobs', {}))
 
     wrapper = ExportWrapper(model, args.segment).eval()
     # a synthetic echo with a known delay, so the check below is meaningful:
@@ -79,6 +141,7 @@ def main():
                       opset_version=args.opset, dynamo=True,
                       input_names=['mic', 'ref'], output_names=['out', 'tau'],
                       report=False)
+    scrub_metadata(args.out)
     size = Path(args.out).stat().st_size
     print('wrote %s (%.2f MB)' % (args.out, size / 1e6))
 

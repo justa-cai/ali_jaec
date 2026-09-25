@@ -33,17 +33,17 @@ DARK = dict(
 
 # ---------------------------------------------------------------- geometry
 ROW_A_CY, BOX_H = 88, 76
-BOX_TOP, BOX_BOT = ROW_A_CY - BOX_H // 2, ROW_A_CY + BOX_H // 2
-RAIL_X, NEG_CY, MUL_CY = 950, 310, 470
+RAIL_X, MUL_CY = 950, 470
 NODE_R = 26
 CHIP_CY, CHIP_H = 470, 72
 PILL_H, PILL_W = 40, 76
 FOUT_CY = 560
 
-B1 = (118, 298, "ref")
-B2 = (324, 454, "ref")
-B3 = (480, 680, "ref")
-B4 = (706, 881, "ref")
+# the reference chain: acquire, track, align
+B1 = (118, 340, "ref")
+B2 = (368, 590, "ref")
+B3 = (640, 880, "ref")
+# the mask chain: features, recurrence, mask
 C1 = (330, 510, "mask")
 C2 = (540, 680, "mask")
 C3 = (710, 890, "mask")
@@ -165,82 +165,76 @@ def build(name):
     add(f'<rect x="0.5" y="0.5" width="{W - 1}" height="{H - 1}" rx="18" '
         f'fill="{p["panel"]}" stroke="{p["panel_edge"]}"/>')
 
-    # ---- row A: the reference chain
+    # ---- row A: the reference chain -- steering only, no signal to the output
     add(f'<g filter="url(#soft)">')
-    for x0, x1, acc in (B1, B2, B3, B4):
+    for x0, x1, acc in (B1, B2, B3):
         add(card(x0, x1, ROW_A_CY, BOX_H, acc, p))
     add('</g>')
     add(card_text(B1[0], B1[1], ROW_A_CY, "Delay estimator",
-                  "GCC-PHAT + soft-argmax", "τ ∈ ±640 ms", p))
-    add(card_text(B2[0], B2[1], ROW_A_CY, "Align by τ", "fractional-delay",
-                  "phase ramp", p))
-    add(card_text(B3[0], B3[1], ROW_A_CY, "Echo estimate",
-                  "per-bin causal FIR", "64 taps × 257 bins", p))
-    add(card_text(B4[0], B4[1], ROW_A_CY, "Least-squares gain",
-                  "α = <Xm, ŷ> / <ŷ, ŷ>", "averaged over 50 ms", p))
+                  "GCC-PHAT + soft-argmax", "runs once, first 1 s", p))
+    add(card_text(B2[0], B2[1], ROW_A_CY, "Per-frame tracker",
+                  "±100 samples per 10 ms", "no parameters", p))
+    add(card_text(B3[0], B3[1], ROW_A_CY, "Align",
+                  "integer shift per frame", "x(n) → x_τ(n)", p))
 
     add(wire([(96, ROW_A_CY), (B1[0], ROW_A_CY)], p["wire"], "a-wire"))
     add(wire([(B1[1], ROW_A_CY), (B2[0], ROW_A_CY)], p["ref"], "a-ref", True))
     add(wire([(B2[1], ROW_A_CY), (B3[0], ROW_A_CY)], p["ref"], "a-ref", True))
-    add(wire([(B3[1], ROW_A_CY), (B4[0], ROW_A_CY)], p["ref"], "a-ref", True))
-    mid = ((B1[1] + B2[0]) / 2, (B2[1] + B3[0]) / 2, (B3[1] + B4[0]) / 2)
-    add(txt(mid[0], ROW_A_CY - 9, "τ", 11.5, p["sub"], mono=True))
-    add(txt(mid[1], ROW_A_CY - 9, "x_τ(n)", 11, p["sub"], mono=True))
-    add(txt(mid[2], ROW_A_CY - 9, "ŷ(n)", 11, p["sub"], mono=True))
+    add(txt((B1[1] + B2[0]) / 2, ROW_A_CY - 9, "τ₀", 11.5, p["sub"], mono=True))
+    add(txt((B2[1] + B3[0]) / 2, ROW_A_CY - 9, "τ(n)", 11, p["sub"], mono=True))
 
-    # the α·ŷ rail, down the right-hand spine into the subtractor
-    add(wire([(B4[1], ROW_A_CY), (RAIL_X, ROW_A_CY), (RAIL_X, NEG_CY - NODE_R)],
-             p["ref"], "a-ref", True))
-    add(txt((B4[1] + RAIL_X) / 2, ROW_A_CY - 11, "α·ŷ(n)", 11, p["sub"],
-            mono=True))
+    # x_tau drops from the align card into the feature row. The reference
+    # STEERS the mask; it never reaches the output itself.
+    feat_in_x = (C1[0] + C1[1]) / 2 - 70
+    add(wire([(B3[1] - 60, ROW_A_CY + BOX_H // 2),
+              (B3[1] - 60, 300), (feat_in_x, 300),
+              (feat_in_x, CHIP_CY - CHIP_H // 2)], p["ref"], "a-ref", True))
+    add(txt(B3[1] - 52, 292, "x_τ(n)", 11, p["sub"], anchor="start", mono=True))
 
-    # ---- row B: the microphone
+    # ---- inputs
     add(pill(58, ROW_A_CY, "x(n)", "ref", p))
     add(txt(58, ROW_A_CY + 34, "far-end ref", 9.5, p["sub"], mono=True))
     add(f'<g filter="url(#soft)">')
-    add(pill(58, NEG_CY, "d(n)", "mic", p))
+    add(pill(58, MUL_CY, "d(n)", "mic", p))
     add('</g>')
-    add(txt(58, NEG_CY + 34, "near-end mic", 9.5, p["sub"], mono=True))
-    add(wire([(96, NEG_CY), (RAIL_X - NODE_R, NEG_CY)], p["mic"], "a-mic",
-             True))
-    add(node(RAIL_X, NEG_CY, "−", "mic", p))
-    add(node(RAIL_X, MUL_CY, "×", "mask", p))
-    add(wire([(RAIL_X, NEG_CY + NODE_R), (RAIL_X, MUL_CY - NODE_R)],
-             p["mic"], None, True))
-    add(txt(RAIL_X + 8, 396, "e0(n)", 11, p["sub"], anchor="start", mono=True))
+    add(txt(58, MUL_CY + 34, "near-end mic", 9.5, p["sub"], mono=True))
 
-    # ---- row C: the mask branch, back-feeding the multiplier
+    # the microphone rail: straight into the multiplier, and tapped for the
+    # feature row on the way
+    add(wire([(96, MUL_CY), (RAIL_X - NODE_R, MUL_CY)], p["mic"], "a-mic",
+             True))
+    tap_x = (C1[0] + C1[1]) / 2 + 70
+    add(wire([(tap_x, MUL_CY), (tap_x, CHIP_CY + CHIP_H // 2)], p["mic"],
+             "a-mic", True))
+    add(f'<circle cx="{tap_x}" cy="{MUL_CY}" r="4" fill="{p["mic"]}"/>')
+
+    # ---- row C: whitening -> recurrence -> mask
     add(f'<g filter="url(#soft)">')
     for x0, x1, acc in (C1, C2, C3):
         add(card(x0, x1, CHIP_CY, CHIP_H, acc, p))
     add('</g>')
-    add(card_text(C1[0], C1[1], CHIP_CY, "Band features", "16 bands of e0, x_τ,",
-                  "e0·x_τ and d(n)", p))
+    add(card_text(C1[0], C1[1], CHIP_CY, "Whitening + bands",
+                  "shared per-bin weight", "16 bands of d, x_τ, d·x_τ", p))
     add(card_text(C2[0], C2[1], CHIP_CY, "GRU", "64 → 96", "per frame", p))
     add(card_text(C3[0], C3[1], CHIP_CY, "Spectral mask", "16 bands → 257 bins",
-                  "per-bin gain", p))
-
-    branch_y = 376
-    add(wire([(RAIL_X, branch_y), ((C1[0] + C1[1]) / 2, branch_y),
-              ((C1[0] + C1[1]) / 2, CHIP_CY - CHIP_H // 2)], p["mask"],
-             "a-mask", True))
-    # the split point, so the branch reads as a tap rather than a second input
-    add(f'<circle cx="{RAIL_X}" cy="{branch_y}" r="4" fill="{p["mask"]}"/>')
+                  "→ 1 where ref quiet", p))
     add(wire([(C1[1], CHIP_CY), (C2[0], CHIP_CY)], p["mask"], "a-mask", True))
     add(wire([(C2[1], CHIP_CY), (C3[0], CHIP_CY)], p["mask"], "a-mask", True))
-    add(wire([(C3[1], CHIP_CY), (RAIL_X - NODE_R, CHIP_CY)], p["mask"],
+    add(wire([(C3[1], CHIP_CY), (RAIL_X - NODE_R - 40, CHIP_CY),
+              (RAIL_X - NODE_R - 40, MUL_CY + NODE_R + 8)], p["mask"],
              "a-mask", True))
-    add(txt((C3[1] + RAIL_X - NODE_R) / 2, CHIP_CY - 11, "mask", 11, p["sub"],
+    add(txt((C3[1] + RAIL_X) / 2 - 30, CHIP_CY - 11, "mask", 11, p["sub"],
             mono=True))
 
-    # ---- output
+    # ---- the multiplier and the output
+    add(node(RAIL_X, MUL_CY, "×", "mask", p))
     add(wire([(RAIL_X, MUL_CY + NODE_R), (RAIL_X, FOUT_CY - PILL_H // 2)],
              p["out"], "a-out", True))
     add(f'<g filter="url(#soft)">')
     add(pill(RAIL_X, FOUT_CY, "e(n)", "out", p))
     add('</g>')
-    add(txt(RAIL_X, FOUT_CY + 34, "mask · (d(n) − α·ŷ(n))", 9.5, p["sub"],
-            mono=True))
+    add(txt(RAIL_X, FOUT_CY + 34, "mask · d(n)  (then per-bin weight + OLA)",
+            9.5, p["sub"], mono=True))
 
     add('</svg>')
     return "\n".join(s) + "\n"
