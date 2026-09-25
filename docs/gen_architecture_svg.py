@@ -171,9 +171,10 @@ def build(name):
         add(card(x0, x1, ROW_A_CY, BOX_H, acc, p))
     add('</g>')
     add(card_text(B1[0], B1[1], ROW_A_CY, "Delay estimator",
-                  "GCC-PHAT + soft-argmax", "runs once, first 1 s", p))
+                  "GCC-PHAT of d and x,", "soft-argmax; once, first 1 s", p))
     add(card_text(B2[0], B2[1], ROW_A_CY, "Per-frame tracker",
-                  "±100 samples per 10 ms", "no parameters", p))
+                  "±100 samples per 10 ms", "correlates d and x; no parameters",
+                  p))
     add(card_text(B3[0], B3[1], ROW_A_CY, "Align",
                   "integer shift per frame", "x(n) → x_τ(n)", p))
 
@@ -191,8 +192,15 @@ def build(name):
               (feat_in_x, CHIP_CY - CHIP_H // 2)], p["ref"], "a-ref", True))
     add(txt(B3[1] - 52, 292, "x_τ(n)", 11, p["sub"], anchor="start", mono=True))
 
-    # ---- inputs
+    # ---- inputs. The delay chain cross-correlates BOTH signals, so the
+    # microphone is tapped up into the estimator as well -- the tracker below
+    # it consumes the same pair.
     add(pill(58, ROW_A_CY, "x(n)", "ref", p))
+    tde_tap_x = 175
+    add(wire([(tde_tap_x, MUL_CY), (tde_tap_x, ROW_A_CY + BOX_H // 2)],
+             p["mic"], "a-mic", True))
+    add(f'<circle cx="{tde_tap_x}" cy="{MUL_CY}" r="4" fill="{p["mic"]}"/>')
+    add(txt(tde_tap_x + 7, 330, "d(n)", 10, p["sub"], anchor="start", mono=True))
     add(txt(58, ROW_A_CY + 34, "far-end ref", 9.5, p["sub"], mono=True))
     add(f'<g filter="url(#soft)">')
     add(pill(58, MUL_CY, "d(n)", "mic", p))
@@ -214,7 +222,7 @@ def build(name):
         add(card(x0, x1, CHIP_CY, CHIP_H, acc, p))
     add('</g>')
     add(card_text(C1[0], C1[1], CHIP_CY, "Whitening + bands",
-                  "shared per-bin weight", "16 bands of d, x_τ, d·x_τ", p))
+                  "shared per-bin weight", "16 bands: d, x_τ, d·x_τ, d", p))
     add(card_text(C2[0], C2[1], CHIP_CY, "GRU", "64 → 96", "per frame", p))
     add(card_text(C3[0], C3[1], CHIP_CY, "Spectral mask", "16 bands → 257 bins",
                   "→ 1 where ref quiet", p))

@@ -101,8 +101,9 @@ reaches its own optimum.
    loudspeaker and the room give it.
 
 3. **The mask, applied directly to the microphone.** A GRU over the whitened
-   16-band energies (of the microphone, the aligned reference, their product)
-   predicts a 257-bin gain and the output is
+   16-band energies (of the microphone, the aligned reference, their product,
+   and the microphone again -- a duplicate the network was trained with and is
+   kept as trained) predicts a 257-bin gain and the output is
 
        e(n) = mask(n) * d(n)
 
