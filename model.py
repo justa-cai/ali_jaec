@@ -206,30 +206,37 @@ class DelayTracker:
         z = torch.zeros(B, W, dtype=mic.dtype, device=dev)
         mp = torch.cat([z, mic], dim=1)
         rp = torch.cat([z, ref], dim=1)
-        idx = starts[:, None] + torch.arange(W, device=dev)[None, :]
-        mw = mp[:, idx.reshape(-1)].reshape(B, -1, W)
-        rw = rp[:, idx.reshape(-1)].reshape(B, -1, W)
 
+        # correlations are computed in frame CHUNKS: the whole-input version
+        # materialises (B, n_frames, nfft) at once -- 630 MB at batch 16 -- for
+        # numbers the frame loop below consumes one row at a time. Chunking
+        # bounds the peak without changing a single estimate.
         nfft = next_pow2(2 * W)
-        G = torch.fft.rfft(mw, n=nfft, dim=-1) * \
-            torch.fft.rfft(rw, n=nfft, dim=-1).conj()
-        cc = torch.fft.irfft(G / (G.abs() + 1e-6), n=nfft, dim=-1)  # PHAT
-
-        taus = torch.zeros(B, cc.shape[1], dtype=torch.long, device=dev)
+        Fq = starts.shape[0]
+        taus = torch.zeros(B, Fq, dtype=torch.long, device=dev)
         taus[:, 0] = tau0.to(dev).long()
         offs = torch.arange(-self.track, self.track + 1, device=dev)
-        for f in range(1, cc.shape[1]):
-            if not armed[f]:
-                taus[:, f] = taus[:, f - 1]
-                continue
-            cur = taus[:, f - 1]
-            cand = cur[:, None] + offs[None, :]                 # (B, 2t+1)
-            val = cc[:, f, :].gather(1, cand % nfft)
-            best = cand.gather(1, val.argmax(1, keepdim=True))[:, 0]
-            # clamped at 0: a negative delay is not physical (the reference
-            # cannot lead the microphone) and would index past the buffer.
-            taus[:, f] = (cur + (best - cur) * self.smooth
-                          ).round().long().clamp(min=0)
+        CH = 32
+        for c0 in range(0, Fq, CH):
+            c1 = min(Fq, c0 + CH)
+            idx = starts[c0:c1, None] + torch.arange(W, device=dev)[None, :]
+            mw = mp[:, idx.reshape(-1)].reshape(B, -1, W)
+            rw = rp[:, idx.reshape(-1)].reshape(B, -1, W)
+            G = torch.fft.rfft(mw, n=nfft, dim=-1) * \
+                torch.fft.rfft(rw, n=nfft, dim=-1).conj()
+            cc = torch.fft.irfft(G / (G.abs() + 1e-6), n=nfft, dim=-1)  # PHAT
+            for f in range(max(1, c0), c1):
+                if not armed[f]:
+                    taus[:, f] = taus[:, f - 1]
+                    continue
+                cur = taus[:, f - 1]
+                cand = cur[:, None] + offs[None, :]                 # (B, 2t+1)
+                val = cc[:, f - c0, :].gather(1, cand % nfft)
+                best = cand.gather(1, val.argmax(1, keepdim=True))[:, 0]
+                # clamped at 0: a negative delay is not physical (the reference
+                # cannot lead the microphone) and would index past the buffer.
+                taus[:, f] = (cur + (best - cur) * self.smooth
+                              ).round().long().clamp(min=0)
         return taus
 
     @torch.no_grad()

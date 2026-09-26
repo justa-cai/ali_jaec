@@ -29,12 +29,12 @@ at once -- echo left in and near-end removed.
 
 | metric | our model | released reference | threshold |
 |---|---|---|---|
-| SI-SDR mean | **7.728 dB** | 5.963 dB | ≥ 6.00 |
-| SI-SDR median | **7.804 dB** | — | ≥ 6.00 |
-| ERLE mean | **8.144 dB** | 6.689 dB | ≥ 6.00 |
-| far-end silence preservation | **+2.129 dB** | −0.525 dB | ≥ −3.00 |
+| SI-SDR mean | **7.537 dB** | 5.963 dB | ≥ 6.00 |
+| SI-SDR median | **7.565 dB** | — | ≥ 6.00 |
+| ERLE mean | **7.852 dB** | 6.689 dB | ≥ 6.00 |
+| far-end silence preservation | **+2.187 dB** | −0.525 dB | ≥ −3.00 |
 
-The last row is the one this model is built around: +2.13 dB means the output
+The last row is the one this model is built around: +2.19 dB means the output
 on far-end-silent frames is *at least* the microphone, i.e. the near end is
 never attenuated there -- by construction, not by a penalty (see the far-end
 gate below). Every previous version of this model scored between −0.7 and
@@ -44,6 +44,20 @@ gate below). Every previous version of this model scored between −0.7 and
 frames where the far end is silent: 0 dB means the microphone passes through
 untouched, negative means the near-end is being eaten. It exists to catch a
 model that simply attenuates everything.
+
+### Operating regimes
+
+The synthetic corpus covers one envelope -- far end always active, echo within
++-10 dB of the near end -- so training mixes in a derived pack covering the
+regimes a deployed canceller also meets (`prepare_scenarios.py`; 50 held-out
+rows each, SI-SDR against the clean near end):
+
+| regime | SI-SDR | note |
+|---|---|---|
+| far end silent (reference idle) | 31.7 dB | pass-through |
+| far end active, no acoustic capture | 34.4 dB | no spurious suppression |
+| weak echo (12-35 dB below near end) | 27.3 dB | |
+| strong echo (12-22 dB above near end) | −8.3 dB | 9.7 dB suppression; a mask without a subtraction stage cannot fully cancel an echo that dominates the near end by 20 dB |
 
 ### Real acoustic paths
 
@@ -55,7 +69,7 @@ stream compared against the microphone at its own delay:
 
 | test | our model | released reference |
 |---|---|---|
-| ERLE | 7.02 dB | **10.33 dB** |
+| ERLE | 8.02 dB | **10.33 dB** |
 | near-end preservation in bins the reference leaves quiet | **−3.7 dB** | −7.4 dB |
 
 The trade is deliberate: the released reference removes more echo from this
@@ -154,11 +168,15 @@ stft.py              analysis / synthesis front-end
 metrics.py           SI-SDR, ERLE, silence preservation
 dataset.py           reads the packed corpus
 prepare_dataset.py   packs the corpus into memory-mappable arrays
+prepare_scenarios.py derives the operating-regime extension pack
 train.py             training
 evaluate.py          acceptance on the held-out split
 export_onnx.py       ONNX export
 infer.py             Python command-line inference
-weights/aec_lp.pt    trained checkpoint
+weights/aec_lp.pt    trained checkpoint (both stages; the delay estimator
+                     is inside, frozen after stage 1)
+weights/aec_tde.pt   the stage-1 delay estimator alone, for reuse as
+                     ``train.py --stage lp --init``
 weights/aec_lp.onnx  the same graph, exported
 docs/                browser demo on GitHub Pages, plus the architecture
                      figure (gen_architecture_svg.py regenerates it)

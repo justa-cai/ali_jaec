@@ -18,10 +18,15 @@ batch to widen the distribution:
   * **an optional second corpus** (``--extra-data``), mixed in per sample at
     ``--extra-frac``. Training the mask on one corpus alone teaches it that
     corpus's statistics; a second, differently-built corpus keeps it honest.
+    ``prepare_scenarios.py`` derives such a corpus from the base pack,
+    covering regimes the synthetic data misses (far end silent, far active
+    with no acoustic capture, weak echo, strong echo) -- the shipped
+    checkpoint was trained with it at ``--extra-frac 0.4``.
 
 Usage:
     python train.py --stage tde --out weights/stage1.pt
-    python train.py --stage lp --init weights/stage1.pt --out weights/aec_lp.pt
+    python train.py --stage lp --init weights/stage1.pt \
+        --extra-data data_scn --extra-frac 0.4 --out weights/aec_lp.pt
 """
 import argparse
 import sys

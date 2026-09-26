@@ -187,10 +187,10 @@
       <tr><th>指标</th><th>本模型</th><th>已发布参考实现</th><th>验收门槛</th></tr>
     </thead>
     <tbody>
-      <tr><td>SI-SDR 均值</td><td class="best">7.728 dB</td><td>5.963 dB</td><td>≥ 6.00</td></tr>
-      <tr><td>SI-SDR 中位数</td><td class="best">7.804 dB</td><td>—</td><td>≥ 6.00</td></tr>
-      <tr><td>ERLE 均值</td><td class="best">8.144 dB</td><td>6.689 dB</td><td>≥ 6.00</td></tr>
-      <tr><td>远端静音段保持度</td><td class="best">+2.129 dB</td><td>−0.525 dB</td><td>≥ −3.00</td></tr>
+      <tr><td>SI-SDR 均值</td><td class="best">7.537 dB</td><td>5.963 dB</td><td>≥ 6.00</td></tr>
+      <tr><td>SI-SDR 中位数</td><td class="best">7.565 dB</td><td>—</td><td>≥ 6.00</td></tr>
+      <tr><td>ERLE 均值</td><td class="best">7.852 dB</td><td>6.689 dB</td><td>≥ 6.00</td></tr>
+      <tr><td>远端静音段保持度</td><td class="best">+2.187 dB</td><td>−0.525 dB</td><td>≥ −3.00</td></tr>
     </tbody>
   </table>
 
@@ -203,13 +203,13 @@
       <tr><th>真实声学路径</th><th>本模型</th><th>已发布参考实现</th></tr>
     </thead>
     <tbody>
-      <tr><td>官方示例对 · ERLE</td><td>7.02 dB</td><td class="best">10.33 dB</td></tr>
+      <tr><td>官方示例对 · ERLE</td><td>8.02 dB</td><td class="best">10.33 dB</td></tr>
       <tr><td>同一对 · 近端保持（参考安静的频点）</td><td class="best">−3.7 dB</td><td>−7.4 dB</td></tr>
     </tbody>
   </table>
 
   <p class="note tight">
-    <b>取舍与局限：</b>本模型在官方示例对上比参考实现少消约 3.3 dB 回声，换来近端损伤减半（上表第二行）——门控把参考安静的频点原样透传，是结构性质而非训练出来的。合成线性回声路径（已知干净近端的测试集）上它弱于带减法级的方案，这是「掩码直接乘麦克风」这一类的固有代价。详见仓库 README。
+    <b>取舍与局限：</b>本模型在官方示例对上比参考实现少消约 2.3 dB 回声，换来近端损伤减半（上表第二行）——门控把参考安静的频点原样透传，是结构性质而非训练出来的。训练数据额外覆盖四种工况（远端静音、远端活跃但无回声、弱回声、强回声），前三种 SI-SDR 31.7 / 34.4 / 27.3 dB；强回声（高出近端 12~22 dB）只做 9.7 dB 抑制——无减法级的掩码方案的天花板。详见仓库 README。
   </p>
 </section>
 
