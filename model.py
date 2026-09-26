@@ -143,133 +143,100 @@ class SpectralWhitener(nn.Module):
 
 
 class DelayTracker:
-    """Per-frame delay tracking with confidence-gated re-acquisition. No
-    parameters.
+    """Per-frame delay tracking around a one-time acquisition. No parameters.
 
-    One mechanism from the first sample: every 10 ms frame correlates exactly
-    the audio it can see -- the trailing one-second window once it exists, the
-    available prefix zero-extended before that -- so acquisition and tracking
-    are the same thing and there is no fixed cold start. Then:
+    Two halves, and both are load-bearing:
 
-      * the target is the GLOBAL peak of the window's GCC-PHAT, not a peak
-        searched in a narrow band around the running estimate. A narrow band
-        cannot see a jump larger than its own width: measured with a +-100
-        band, a +320-sample path change is never followed at all (the true
-        peak stays outside the band forever and the tracker random-walks on
-        noise), and a failed acquisition -- a silent first second -- never
-        recovers either. The global peak over the same correlation is free:
-        it is already computed, and measured to land on the true delay even
-        at the instant of a jump and under a loud near-end talker.
-      * a frame only updates the estimate when the correlation is actually
-        usable. Two gates, both cheap: the normalised cross-correlation peak
-        (how much of the microphone the reference explains at the best lag --
-        this is what PHAT throws away, so it is computed on the unnormalised
-        correlation) and the PHAT peak's prominence over its own median.
-        When either fails -- far end silent, echo absent, or the window still
-        straddling a jump -- the estimate HOLDS. Holding, not drifting, is
-        what turns the failure mode from "wanders away and never returns"
-        into "stale until the evidence returns".
-      * the move toward the target is leaky, so the residual +-1 sample
-        jitter of an integer argmax does not reach the alignment.
+      * Acquisition. A search band cannot find a 2528-sample delay from zero,
+        so the delay is acquired ONCE by the trained estimator
+        (``DelayEstimator``) over the first ``win`` samples -- one second,
+        because the estimator searches +-10240 samples = 0.64 s and the
+        correlation wants margin beyond that.
+      * Tracking. Every 10 ms frame GCC-PHAT-correlates the TRAILING second
+        [s - win, s) and takes the best lag inside +-{track} samples of the
+        running estimate, moving ``smooth`` of the way there. The leaky step
+        bounds the per-frame move (25 samples) so integer-argmax jitter never
+        reaches the alignment, while a step inside the band closes in a few
+        frames.
 
-    Causality: the window is the TRAILING second, [s - win, s), clamped at
-    the start of the recording. Frames inside the first ``win`` samples
-    therefore correlate whatever prefix exists (a window that would reach
-    before the first sample is anchored at sample 0, extending forward), and
-    everything after it uses strictly past audio -- no frame ever needs
-    future samples, which is what makes the tracker deployable frame by
-    frame.
+    Why a band rather than the global peak of the very same correlation. The
+    obvious objection to a band is that it cannot follow a jump wider than
+    itself; measured, the opposite failure is worse. A global search sees
+    every competitor, and on real material the strongest competitor is not
+    always the echo: a weak but COHERENT near-zero-lag bleed of the far end
+    into the microphone beats the true, reverberant peak once PHAT
+    normalisation has discarded the level difference that separated them (a
+    global-peak variant locked 2 samples off for the first five seconds of
+    the demo pair and lost ~3 dB ERLE on identical weights). Confidence gates
+    cannot tell those two peaks apart -- both are coherent. The band can,
+    structurally: it never looks at lag 2, because the acquisition, trained
+    on labelled delays, starts it at the true path. The price is stated
+    plainly: a path change wider than +-{track} samples in a single step is
+    not followed until the caller re-runs acquisition.
 
-    A jump is absorbed as fast as a one-second window allows: until the old
-    path has (mostly) left the window the old peak keeps winning, so the
-    measured re-lock after an abrupt change is a fraction of the window
-    length, not the ~2 frames a narrow tracker needs for a small step -- and
-    not never, which is what the narrow band delivered.
+    Causality: a frame's window is [s - win, s) -- strictly past audio,
+    front-zero-padded so every window is full length. Frames inside the
+    first ``win`` samples are still filling their window and HOLD the
+    acquisition. A streaming caller therefore buffers the first second
+    before emitting anything (the acquisition needs one second because its
+    range is one second), after which the only latency is the 352-sample
+    front-end delay. No frame needs audio later than itself, and no
+    whole-recording FFT is ever computed.
     """
 
-    def __init__(self, win=16000, hop=160, smooth=0.5,
-                 min_corr=0.05, min_prom=20.0, noise_k=4.0, min_peak=0.15):
-        self.win, self.hop, self.smooth = win, hop, smooth
-        self.min_corr, self.min_prom = min_corr, min_prom
-        # the normalised correlation of UNCORRELATED audio has a noise ceiling
-        # of about noise_k / sqrt(effective window length) at its best lag, so
-        # a fixed threshold only rejects noise once the window exceeds
-        # (noise_k / min_corr)^2 samples -- 6400 for the defaults, i.e. the
-        # first 0.4 s could lock on pure noise. The gates therefore rise as
-        # sqrt(W / W_eff) while the window is still filling.
-        self.noise_k = noise_k
-        # third gate, absolute: a real echo leaves a LARGE PHAT peak (measured
-        # 0.38-0.77 on true paths) while the peak of two band-limited but
-        # uncorrelated speech signals sits around 1/sqrt(effective bins),
-        # ~0.03-0.08 -- their cross-correlation noise floor is well above the
-        # white-noise ceiling the scaled corr gate assumes, which is how an
-        # echo-free microphone could drift a few hundred samples over seconds.
-        self.min_peak = min_peak
+    def __init__(self, win=16000, hop=160, track=100, smooth=0.25):
+        self.win, self.hop, self.track, self.smooth = win, hop, track, smooth
 
     @torch.no_grad()
-    def tau_sequence(self, mic, ref):
-        """Per-frame delay estimates for the whole input. (B, T) waveforms in,
-        (B, n_frames) integer delays out.
+    def tau_sequence(self, mic, ref, tau0):
+        """(B, T) waveforms plus the acquired (B,) integer delay ->
+        (B, n_frames) integer delays.
 
-        The signal is prefixed with ``win`` zeros, so every frame correlates a
-        FULL-length window that contains exactly the audio it can see -- the
-        trailing second once it exists, the available prefix zero-extended
-        before that. Acquisition and tracking are then the SAME mechanism from
-        sample one: the estimate locks whenever the prefix's correlation is
-        strong enough to pass the gates, which on an active far end is a few
-        hundred milliseconds, and holds otherwise. There is no fixed cold
-        start, no separate acquisition pass, and no frame ever touches audio
-        later than itself.
+        The tracker has no acquisition mechanism of its own; ``tau0`` comes
+        from the trained estimator run on the first ``win`` samples. The
+        window length never depends on the input length -- an output sample's
+        value must not depend on how much audio follows it (measured:
+        sub-second prefix cuts disagreed with the full pass otherwise).
         """
         B, T = mic.shape
         dev = mic.device
-        # NOT min(win, T): the window length must not depend on the input
-        # length, or an output sample's value would depend on how much audio
-        # follows it (measured: sub-second prefixes disagreed with the full
-        # pass by up to 0.9 absolute). The front padding already makes every
-        # window full-length for any T.
         W = self.win
-
         starts = torch.arange(0, T, self.hop, device=dev)
+        armed = starts >= W                     # window [s-W, s) fully inside
         z = torch.zeros(B, W, dtype=mic.dtype, device=dev)
         mp = torch.cat([z, mic], dim=1)
         rp = torch.cat([z, ref], dim=1)
-        # window [s, s+W) of the padded signal == x[max(0, s-W), s)
         idx = starts[:, None] + torch.arange(W, device=dev)[None, :]
         mw = mp[:, idx.reshape(-1)].reshape(B, -1, W)
         rw = rp[:, idx.reshape(-1)].reshape(B, -1, W)
 
         nfft = next_pow2(2 * W)
-        G = torch.fft.rfft(mw, n=nfft, dim=-1) * torch.fft.rfft(rw, n=nfft, dim=-1).conj()
-        # PHAT: where the peak is. Raw: how much of the mic it explains.
-        cc = torch.fft.irfft(G / (G.abs() + 1e-6), n=nfft, dim=-1)     # (B,F,nfft)
-        raw = torch.fft.irfft(G, n=nfft, dim=-1)
-        energy = (mw.pow(2).sum(-1).sqrt() * rw.pow(2).sum(-1).sqrt())[:, :, None]
+        G = torch.fft.rfft(mw, n=nfft, dim=-1) * \
+            torch.fft.rfft(rw, n=nfft, dim=-1).conj()
+        cc = torch.fft.irfft(G / (G.abs() + 1e-6), n=nfft, dim=-1)  # PHAT
 
         taus = torch.zeros(B, cc.shape[1], dtype=torch.long, device=dev)
-        w_eff = starts.clamp(max=W).float()
+        taus[:, 0] = tau0.to(dev).long()
+        offs = torch.arange(-self.track, self.track + 1, device=dev)
         for f in range(1, cc.shape[1]):
-            phat = cc[:, f, :W]
-            tgt = phat.argmax(1)                                     # (B,)
-            prom = phat.max(1).values / (phat.abs().median(1).values + 1e-12)
-            corr = raw[:, f, :].gather(1, tgt[:, None]).squeeze(1) / \
-                (energy[:, f, 0] + 1e-12)
-            grow = float(torch.sqrt(torch.tensor(W / max(w_eff[f].item(), 1.0))))
-            ok = (corr >= max(self.min_corr, self.noise_k /
-                              float(torch.sqrt(w_eff[f].clamp(min=1.0)))))
-            ok = ok & (prom >= self.min_prom * grow)
-            ok = ok & (phat.max(1).values >= self.min_peak)
-            step = (tgt - taus[:, f - 1]).float() * self.smooth
-            taus[:, f] = torch.where(
-                ok, (taus[:, f - 1].float() + step).round().long().clamp(min=0),
-                taus[:, f - 1])
+            if not armed[f]:
+                taus[:, f] = taus[:, f - 1]
+                continue
+            cur = taus[:, f - 1]
+            cand = cur[:, None] + offs[None, :]                 # (B, 2t+1)
+            val = cc[:, f, :].gather(1, cand % nfft)
+            best = cand.gather(1, val.argmax(1, keepdim=True))[:, 0]
+            # clamped at 0: a negative delay is not physical (the reference
+            # cannot lead the microphone) and would index past the buffer.
+            taus[:, f] = (cur + (best - cur) * self.smooth
+                          ).round().long().clamp(min=0)
         return taus
 
     @torch.no_grad()
-    def __call__(self, mic, ref):
-        """Returns (aligned reference, per-frame delays (B, n_frames))."""
+    def __call__(self, mic, ref, tau0):
+        """Acquired delay in, (aligned reference, per-frame delays) out."""
         T = mic.shape[-1]
-        taus = self.tau_sequence(mic, ref)
+        taus = self.tau_sequence(mic, ref, tau0)
         tau_seq = taus.repeat_interleave(self.hop, dim=1)[:, :T]
         tail = torch.zeros(mic.shape[0], T + int(tau_seq.max()) + 1,
                            dtype=ref.dtype, device=ref.device)
@@ -338,7 +305,13 @@ class AecFrontend(nn.Module):
     # ------------------------------------------------------------------ main
     def forward(self, mic, ref, length=None):
         if self.tde_mode == 'stream':
-            ref, taus = self.tracker(mic, ref)
+            # acquisition once, on the first second (causal; the estimator's
+            # search range is +-10240 samples = 0.64 s, so it needs the
+            # margin). Everything after is the parameter-free tracker.
+            W = min(self.tracker.win, mic.shape[-1])
+            tau0, _ = self.tde(mic[:, :W], ref[:, :W])
+            tau0 = tau0.round().long().clamp(min=0, max=max(0, mic.shape[-1] - 1))[:, 0]
+            ref, taus = self.tracker(mic, ref, tau0)
             ref_aligned = ref
         else:
             tau, _ = self.tde(mic, ref)

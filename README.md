@@ -29,12 +29,12 @@ at once -- echo left in and near-end removed.
 
 | metric | our model | released reference | threshold |
 |---|---|---|---|
-| SI-SDR mean | **6.820 dB** | 5.963 dB | ≥ 6.00 |
-| SI-SDR median | **7.118 dB** | — | ≥ 6.00 |
-| ERLE mean | **6.747 dB** | 6.689 dB | ≥ 6.00 |
-| far-end silence preservation | **+2.306 dB** | −0.525 dB | ≥ −3.00 |
+| SI-SDR mean | **7.728 dB** | 5.963 dB | ≥ 6.00 |
+| SI-SDR median | **7.804 dB** | — | ≥ 6.00 |
+| ERLE mean | **8.144 dB** | 6.689 dB | ≥ 6.00 |
+| far-end silence preservation | **+2.129 dB** | −0.525 dB | ≥ −3.00 |
 
-The last row is the one this model is built around: +2.25 dB means the output
+The last row is the one this model is built around: +2.13 dB means the output
 on far-end-silent frames is *at least* the microphone, i.e. the near end is
 never attenuated there -- by construction, not by a penalty (see the far-end
 gate below). Every previous version of this model scored between −0.7 and
@@ -55,11 +55,11 @@ stream compared against the microphone at its own delay:
 
 | test | our model | released reference |
 |---|---|---|
-| ERLE | 7.25 dB | **10.33 dB** |
-| near-end preservation in bins the reference leaves quiet | **−3.2 dB** | −7.4 dB |
+| ERLE | 7.02 dB | **10.33 dB** |
+| near-end preservation in bins the reference leaves quiet | **−3.7 dB** | −7.4 dB |
 
 The trade is deliberate: the released reference removes more echo from this
-pair and attenuates the near end more than twice as heavily while doing it.
+pair and attenuates the near end twice as heavily while doing it.
 The far-end gate (below) is what buys the near-end column.
 
 ## How it works
@@ -87,22 +87,32 @@ reaches its own optimum.
    microphone and reference is reduced to a scalar delay by a soft-argmax over
    the lag axis plus a small regression head (the correlation curve is very
    flat, so it is standardised before the softmax -- without that the
-   soft-argmax collapses to zero). This runs **once, on the first second**,
-   anywhere in a +-1 s range, and tracks it with ONE mechanism from the first
-   sample: every 10 ms the tracker correlates exactly the audio it can see --
-   the trailing second once it exists, the available prefix zero-extended
-   before that -- and moves toward that window's GLOBAL correlation peak when
-   the evidence passes the confidence gates (normalised cross-correlation
-   peak, scaled for the window's effective length; PHAT prominence; an
-   absolute PHAT peak), holding the previous estimate when it does not. A
-   narrow band around the running estimate cannot see a jump larger than the
-   band -- measured, a +320-sample path change was never followed and a
-   failed acquisition never recovered -- which is why the target is global.
-   The estimate locks when the evidence arrives (measured 0.37 s on an active
-   far end at a 2528-sample delay, scaling with the delay), not after a fixed
-   window. The tracker has no trainable parameters, no frame needs audio
-   later than itself, and no whole-recording FFT is ever needed: a stream
-   with no cold start beyond the 352-sample front-end delay.
+   soft-argmax collapses to zero). This runs **once, on the first second** --
+   the search range is +-10240 samples = 0.64 s, so acquisition needs the
+   second to spare -- anywhere in that range. From there a classical,
+   parameter-free tracker follows the path: every 10 ms it GCC-PHAT-correlates
+   the trailing second and moves a leaky 25 % toward the best lag inside a
+   +-100-sample band around the running estimate, so a step inside the band
+   closes within a few frames while the +-1-sample jitter of an integer argmax
+   never reaches the alignment.
+
+   The band -- rather than the global peak of the very same correlation --
+   is the deliberate choice. A global search sees every competitor, and the
+   loudest competitor is not always the echo: on the demo pair, a weak but
+   coherent near-zero-lag bleed of the far end into the microphone beats the
+   true reverberant peak once PHAT normalisation has discarded the level
+   difference that separated them; a global-peak variant locked 2 samples off
+   for the first five seconds and measured 4.4 dB ERLE where this tracker, on
+   identical weights, measures 7.7. Confidence gates cannot tell two coherent
+   peaks apart -- the band can, structurally, because the acquisition,
+   trained on labelled delays, starts it on the true path. The price is
+   stated plainly: a path change wider than +-100 samples in a single step
+   is not followed until the caller re-runs acquisition, and a stream
+   buffers the first second before its first output (that buffer IS the
+   acquisition window), after which the only latency is the 352-sample
+   front-end delay -- measured on growing prefixes of the demo pair, the
+   output after the first second agrees with a full offline pass to under
+   1e-6 per sample.
 
 2. **Whitening.** One learned per-bin weight, shared by microphone and
    reference, normalises the far end's spectral tilt out of the features. The
