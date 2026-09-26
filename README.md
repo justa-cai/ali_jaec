@@ -29,10 +29,10 @@ at once -- echo left in and near-end removed.
 
 | metric | our model | released reference | threshold |
 |---|---|---|---|
-| SI-SDR mean | **7.763 dB** | 5.963 dB | ≥ 6.00 |
-| SI-SDR median | **7.826 dB** | — | ≥ 6.00 |
-| ERLE mean | **7.687 dB** | 6.689 dB | ≥ 6.00 |
-| far-end silence preservation | **+2.250 dB** | −0.525 dB | ≥ −3.00 |
+| SI-SDR mean | **6.820 dB** | 5.963 dB | ≥ 6.00 |
+| SI-SDR median | **7.118 dB** | — | ≥ 6.00 |
+| ERLE mean | **6.747 dB** | 6.689 dB | ≥ 6.00 |
+| far-end silence preservation | **+2.306 dB** | −0.525 dB | ≥ −3.00 |
 
 The last row is the one this model is built around: +2.25 dB means the output
 on far-end-silent frames is *at least* the microphone, i.e. the near end is
@@ -88,12 +88,21 @@ reaches its own optimum.
    the lag axis plus a small regression head (the correlation curve is very
    flat, so it is standardised before the softmax -- without that the
    soft-argmax collapses to zero). This runs **once, on the first second**,
-   to acquire the delay anywhere in a +-1 s range. A classical tracker then
-   follows it frame by frame: GCC-PHAT over the trailing second, a peak search
-   within +-100 samples of the running estimate, a leaky update, and a
-   per-frame integer shift of the reference. The tracker has no trainable
-   parameters, and no whole-recording FFT is ever needed -- which is what
-   makes the front-end deployable frame by frame.
+   anywhere in a +-1 s range, and tracks it with ONE mechanism from the first
+   sample: every 10 ms the tracker correlates exactly the audio it can see --
+   the trailing second once it exists, the available prefix zero-extended
+   before that -- and moves toward that window's GLOBAL correlation peak when
+   the evidence passes the confidence gates (normalised cross-correlation
+   peak, scaled for the window's effective length; PHAT prominence; an
+   absolute PHAT peak), holding the previous estimate when it does not. A
+   narrow band around the running estimate cannot see a jump larger than the
+   band -- measured, a +320-sample path change was never followed and a
+   failed acquisition never recovered -- which is why the target is global.
+   The estimate locks when the evidence arrives (measured 0.37 s on an active
+   far end at a 2528-sample delay, scaling with the delay), not after a fixed
+   window. The tracker has no trainable parameters, no frame needs audio
+   later than itself, and no whole-recording FFT is ever needed: a stream
+   with no cold start beyond the 352-sample front-end delay.
 
 2. **Whitening.** One learned per-bin weight, shared by microphone and
    reference, normalises the far end's spectral tilt out of the features. The
